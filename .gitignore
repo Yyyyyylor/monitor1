@@ -1,0 +1,27 @@
+# 个人配置（包含 API key 和 Steam ID）
+.env
+
+# 数据库
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+venv/
+.venv/
+
+# 日志
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# Python 安装包（打包时保留，git 不跟踪）
+python-*.exe

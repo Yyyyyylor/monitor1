@@ -1,0 +1,1183 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Steam CS2 库存监控器</title>
+<style>
+:root {
+  --bg: #0f1117; --card: #1a1d27; --border: #2a2d3a; --accent: #6c5ce7;
+  --accent2: #00cec9; --green: #00b894; --red: #d63031; --orange: #fdcb6e;
+  --text: #dfe6e9; --text2: #b2bec3; --text3: #636e72;
+  --fn: #4b69ff; --mw: #5e98d9; --ft: #4b69ff; --ww: #b45309; --bs: #8847ff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+
+.header { background: var(--card); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; }
+.header h1 { font-size: 20px; display: flex; align-items: center; gap: 10px; }
+.header-right { display: flex; align-items: center; gap: 12px; }
+.status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.status-dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.status-dot.off { background: var(--red); }
+.status-text { font-size: 13px; color: var(--text2); }
+
+.btn { padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all .2s; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #5b4bd5; }
+.btn-success { background: var(--green); color: #fff; }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-ghost { background: transparent; color: var(--text2); border: 1px solid var(--border); }
+.btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+
+.main { display: flex; height: calc(100vh - 57px); }
+.sidebar { width: 300px; background: var(--card); border-right: 1px solid var(--border); overflow-y: auto; flex-shrink: 0; }
+.content { flex: 1; overflow-y: auto; padding: 24px; }
+
+.sidebar-header { padding: 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+.sidebar-header h3 { font-size: 14px; color: var(--text2); text-transform: uppercase; letter-spacing: 1px; }
+.user-card { padding: 14px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .15s; display: flex; align-items: center; gap: 12px; }
+.user-card:hover { background: rgba(108,92,231,0.08); }
+.user-card.active { background: rgba(108,92,231,0.15); border-left: 3px solid var(--accent); }
+.user-avatar { width: 44px; height: 44px; border-radius: 50%; background: var(--border); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.user-info { flex: 1; min-width: 0; }
+.user-name { font-weight: 600; font-size: 15px; }
+.user-meta { font-size: 12px; color: var(--text3); display: flex; gap: 8px; margin-top: 2px; }
+.badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-ok { background: rgba(0,184,148,0.15); color: var(--green); }
+.badge-fail { background: rgba(214,48,49,0.15); color: var(--red); }
+.badge-off { background: rgba(99,110,114,0.2); color: var(--text3); }
+
+.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; }
+.stat-card .label { font-size: 12px; color: var(--text3); text-transform: uppercase; }
+.stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+.stat-card .sub { font-size: 12px; color: var(--text2); margin-top: 2px; }
+
+/* Category tabs */
+.cat-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+.cat-tab { padding: 6px 14px; border-radius: 20px; font-size: 13px; cursor: pointer; border: 1px solid var(--border); background: var(--card); color: var(--text2); transition: all .15s; }
+.cat-tab:hover { border-color: var(--accent); color: var(--accent); }
+.cat-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.cat-tab .cnt { opacity: 0.7; margin-left: 4px; }
+
+/* Sort/filter bar */
+.filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+.filter-bar select { padding: 6px 10px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; }
+.filter-bar input { padding: 6px 10px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; width: 200px; }
+
+/* Item grid */
+.item-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.item-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; cursor: pointer; transition: all .2s; position: relative; }
+.item-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); border-color: var(--accent); }
+.item-wear-bar { height: 3px; width: 100%; }
+.item-img-box { height: 100px; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.2); padding: 8px; }
+.item-img-box img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.item-info { padding: 8px 10px; }
+.item-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.item-bottom { display: flex; justify-content: space-between; align-items: center; margin-top: 4px; }
+.item-wear-text { font-size: 11px; color: var(--text3); }
+.item-rarity { font-size: 10px; padding: 1px 5px; border-radius: 3px; font-weight: 600; }
+.item-st-badge { position: absolute; top: 6px; right: 6px; background: #e74c3c; color: #fff; font-size: 9px; font-weight: 700; padding: 2px 4px; border-radius: 3px; }
+.item-count-badge { position: absolute; top: 6px; left: 6px; background: var(--accent); color: #fff; font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: 3px; }
+
+/* Detail modal */
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 200; display: flex; align-items: center; justify-content: center; }
+.modal-detail { background: var(--card); border: 1px solid var(--border); border-radius: 16px; width: 560px; max-width: 95vw; max-height: 85vh; overflow-y: auto; }
+.modal-detail-header { padding: 20px; display: flex; gap: 16px; border-bottom: 1px solid var(--border); }
+.modal-detail-img { width: 140px; height: 140px; background: rgba(0,0,0,0.3); border-radius: 10px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.modal-detail-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.modal-detail-title { flex: 1; }
+.modal-detail-title h2 { font-size: 18px; margin-bottom: 8px; }
+.modal-detail-title .meta-row { font-size: 13px; color: var(--text2); margin-bottom: 4px; }
+.modal-detail-body { padding: 20px; }
+.modal-detail-body .sticker-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.modal-detail-body .sticker-item { background: var(--bg); padding: 8px; border-radius: 8px; font-size: 12px; }
+.modal-actions { padding: 16px 20px; border-top: 1px solid var(--border); display: flex; gap: 10px; justify-content: flex-end; }
+.close-btn { position: absolute; top: 12px; right: 16px; background: none; border: none; color: var(--text3); font-size: 24px; cursor: pointer; }
+
+/* Tabs */
+.tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.tab { padding: 10px 20px; font-size: 13px; cursor: pointer; color: var(--text3); border-bottom: 2px solid transparent; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.panel { background: var(--card); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 20px; }
+.panel-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+.panel-body { padding: 20px; }
+
+.inv-table { width: 100%; border-collapse: collapse; }
+.inv-table th { text-align: left; padding: 10px 12px; font-size: 12px; color: var(--text3); border-bottom: 1px solid var(--border); }
+.inv-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
+.inv-table tr:hover { background: rgba(108,92,231,0.05); }
+
+.change-item { padding: 10px 0; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+.change-badge { padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; min-width: 70px; text-align: center; }
+.change-badge.added { background: rgba(0,184,148,0.15); color: var(--green); }
+.change-badge.removed { background: rgba(214,48,49,0.15); color: var(--red); }
+.change-badge.modified { background: rgba(253,203,110,0.15); color: var(--orange); }
+.change-badge.swapped { background: rgba(108,92,231,0.15); color: var(--accent); }
+.change-detail { font-size: 13px; color: var(--text2); }
+.change-time { font-size: 11px; color: var(--text3); margin-left: auto; }
+
+.empty { text-align: center; padding: 60px 20px; color: var(--text3); }
+.empty .icon { font-size: 48px; margin-bottom: 12px; }
+.toast { position: fixed; bottom: 24px; right: 24px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 20px; font-size: 13px; z-index: 300; animation: slideUp .3s; }
+@keyframes slideUp { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+.spinner { width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+@media (max-width: 768px) { .main { flex-direction: column; } .sidebar { width: 100%; max-height: 40vh; } .stats-row { grid-template-columns: 1fr 1fr; } .item-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); } }
+
+/* 频率标签 */
+.freq-badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.freq-high { background: rgba(214,48,49,0.15); color: var(--red); }
+.freq-medium { background: rgba(253,203,110,0.15); color: var(--orange); }
+.freq-low { background: rgba(99,110,114,0.2); color: var(--text3); }
+.freq-select { padding: 2px 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 11px; cursor: pointer; transition: border-color .15s; width: 100%; }
+.freq-select:hover { border-color: var(--accent); }
+/* 频率管理面板 */
+.freq-panel { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-top: 12px; }
+.freq-panel h3 { font-size: 13px; color: var(--text2); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 1px; }
+.freq-tier-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.03); font-size: 12px; }
+.freq-tier-row:last-child { border-bottom: none; }
+.freq-tier-name { width: 60px; font-weight: 600; }
+.freq-tier-count { width: 40px; color: var(--text2); }
+.freq-tier-last { flex: 1; color: var(--text3); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>🎯 Steam CS2 库存监控器</h1>
+  <div class="header-right">
+    <span class="status-dot" id="statusDot"></span>
+    <span class="status-text" id="statusText">检查中...</span>
+    <button class="btn btn-sm" id="btnFetchNow" onclick="fetchNow()">⟳ 立即爬取</button>
+    <button class="btn btn-sm" id="btnToggleMonitor" onclick="toggleMonitor()">启动监控</button>
+    <button class="btn btn-sm btn-ghost" onclick="showManagePanel()" title="用户管理">⚙️ 管理</button>
+  </div>
+</div>
+
+<!-- Login Overlay -->
+<div class="modal-overlay" id="loginOverlay" style="display:none">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:32px;width:360px;text-align:center">
+    <h2 style="margin-bottom:8px">🔐 登录</h2>
+    <p style="font-size:13px;color:var(--text3);margin-bottom:16px">请输入访问密码</p>
+    <input type="password" id="loginPassword" placeholder="Password" onkeydown="if(event.key==='Enter')doLogin()" style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;margin-bottom:12px">
+    <p id="loginError" style="color:var(--red);font-size:13px;margin-bottom:8px;display:none"></p>
+    <button class="btn btn-primary" onclick="doLogin()" style="width:100%">确认</button>
+  </div>
+</div>
+
+<div class="main">
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <h3>监控对象</h3>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm btn-primary" onclick="showAddModal()">+ 添加</button>
+        <button class="btn btn-sm btn-ghost" onclick="showTrash()" id="btnTrash" title="回收站">🗑️</button>
+      </div>
+    </div>
+    <div id="userList"></div>
+  </div>
+  <div class="content" id="content">
+    <div class="empty"><div class="icon">👈</div><p>选择左侧用户查看详情</p></div>
+  </div>
+</div>
+
+<!-- Add/Edit Modal -->
+<div class="modal-overlay" id="addModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px;width:420px">
+    <h3 id="modalTitle">添加监控用户</h3>
+    <label style="display:block;font-size:13px;color:var(--text2);margin:12px 0 4px">Steam 64位 ID</label>
+    <input type="text" id="modalSteamId" placeholder="76561198825998777 或 https://steamcommunity.com/profiles/xxx" oninput="validateSteamIdInput()" style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+    <p id="steamIdHint" style="font-size:11px;color:var(--text3);margin-top:4px">支持: 17位数字ID / steamcommunity.com/profiles/xxx</p>
+    <label style="display:block;font-size:13px;color:var(--text2);margin:12px 0 4px">备注（可选）</label>
+    <input type="text" id="modalNickname" placeholder="我的大号" style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text)">
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px">
+      <button class="btn btn-ghost" onclick="document.getElementById('addModal').style.display='none'">取消</button>
+      <button class="btn btn-primary" onclick="saveUser()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Batch Import Modal -->
+<div class="modal-overlay" id="batchModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:16px;padding:24px;width:520px;max-width:95vw">
+    <h3 style="margin-bottom:4px">📋 批量导入用户</h3>
+    <p style="font-size:12px;color:var(--text3);margin-bottom:12px">每行一个用户，分隔符支持 <code style="background:var(--bg);padding:2px 4px;border-radius:3px">,</code> <code style="background:var(--bg);padding:2px 4px;border-radius:3px">;</code> <code style="background:var(--bg);padding:2px 4px;border-radius:3px">|</code> <code style="background:var(--bg);padding:2px 4px;border-radius:3px">Tab</code>，ID和备注顺序随意</p>
+    <textarea id="batchInput" rows="10" placeholder="76561199366136578, 大项目&#10;小项目, 76561198768833849&#10;https://steamcommunity.com/profiles/76561198825998777; 新用户&#10;76561198771198635" style="width:100%;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;font-family:monospace;resize:vertical"></textarea>
+    <div id="batchHint" style="font-size:11px;color:var(--text3);margin-top:4px">支持: 17位ID / Steam个人资料URL / SteamDT URL</div>
+    <div id="batchResult" style="margin-top:10px;max-height:200px;overflow-y:auto;display:none"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:16px">
+      <button class="btn btn-ghost" onclick="document.getElementById('batchModal').style.display='none'">取消</button>
+      <button class="btn btn-primary" id="btnBatchImport" onclick="doBatchImport()">导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- Detail Modal -->
+<div class="modal-overlay" id="detailModal" style="display:none" onclick="if(event.target===this)this.style.display='none'">
+  <div class="modal-detail" id="detailContent"></div>
+</div>
+
+<script>
+const API = '';
+let currentSteamId = null, editingSteamId = null, pollTimer = null, heartbeatTimer = null, wsConn = null;
+let currentInventory = null, activeCategory = 'all', displayMode = 'stacked';
+let authToken = localStorage.getItem('auth_token') || '';
+
+// --- Wear colors ---
+const CHANGETYPE_ZH = {added:'新增', removed:'移除', modified:'修改', swapped:'交换'};
+const WEAR_COLORS = { 'Factory New': '#4b69ff', 'Minimal Wear': '#5e98d9', 'Field-Tested': '#b0a132', 'Well-Worn': '#b45309', 'Battle-Scarred': '#8847ff' };
+const RARITY_COLORS = { 'Consumer Grade': '#b0c3d9', 'Industrial Grade': '#5e98d9', 'Mil-Spec Grade': '#4b69ff', 'Restricted': '#8847ff', 'Classified': '#d32ce6', 'Covert': '#eb4b4b', '★': '#e4ae39', 'Exceedingly Rare': '#e4ae39' };
+
+function getWearColor(name) { for (const [k, v] of Object.entries(WEAR_COLORS)) { if (name && name.includes(k)) return v; } return '#636e72'; }
+function getRarityColor(name) { if (!name) return '#b0c3d9'; for (const [k, v] of Object.entries(RARITY_COLORS)) { if (name.includes(k)) return v; } return '#b0c3d9'; }
+function imgUrl(icon) { return icon ? `https://steamcommunity-a.akamaihd.net/economy/image/${icon}/120x120` : ''; }
+
+// --- API (带认证) ---
+async function api(method, path, body) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+  if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(API + path, opts);
+  if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
+  return r.json();
+}
+function toast(msg) { const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg; document.body.appendChild(el); setTimeout(() => el.remove(), 3000); }
+
+// --- Login ---
+async function doLogin() {
+  const pw = document.getElementById('loginPassword').value;
+  if (!pw) return;
+  try {
+    const r = await fetch(API + '/api/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pw}) });
+    const d = await r.json();
+    if (d.ok) {
+      authToken = d.token;
+      localStorage.setItem('auth_token', authToken);
+      document.getElementById('loginOverlay').style.display = 'none';
+      await init();
+    } else {
+      document.getElementById('loginError').textContent = '密码错误';
+      document.getElementById('loginError').style.display = '';
+    }
+  } catch(e) { document.getElementById('loginError').textContent = '连接失败'; document.getElementById('loginError').style.display = ''; }
+}
+function showLogin() {
+  document.getElementById('loginOverlay').style.display = '';
+  if (pollTimer) clearInterval(pollTimer);
+}
+async function checkAuth() {
+  try { const r = await fetch(API + '/api/users', { headers: authToken ? {'Authorization':'Bearer '+authToken} : {} }); return r.status !== 401; } catch { return false; }
+}
+
+// --- WebSocket ---
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  wsConn = new WebSocket(`${proto}//${location.host}/api/ws`);
+  wsConn = new WebSocket(`${proto}//${location.host}/api/ws`);
+  wsConn.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'user_done') {
+        // 逐用户实时提示
+        const d = msg.data;
+        const icon = d.ok ? '✅' : '❌';
+        const detail = d.ok ? (d.events > 0 ? `· ${d.events}个变化` : '· 无变化') : `· ${d.msg}`;
+        toast(`${icon} ${d.nickname || d.steam_id} ${detail}`);
+        loadUsers();
+        if (currentSteamId === d.steam_id) loadInventory(d.steam_id);
+      }
+      if (msg.type === 'update') {
+        refreshStatus();
+        loadUsers();
+      }
+    } catch {}
+  };
+  wsConn.onclose = () => { setTimeout(connectWS, 5000); };
+}
+
+// --- Heartbeat ---
+function startHeartbeat() { if (heartbeatTimer) return; heartbeatTimer = setInterval(() => fetch(API+'/api/heartbeat',{method:'POST'}).catch(()=>{}), 5000); }
+window.addEventListener('beforeunload', () => navigator.sendBeacon(API + '/api/heartbeat'));
+
+// --- Status ---
+async function refreshStatus() {
+  const s = await api('GET', '/api/status');
+  const dot = document.getElementById('statusDot'), txt = document.getElementById('statusText'), btn = document.getElementById('btnToggleMonitor');
+  if (s.monitor_running) { dot.className='status-dot on'; txt.textContent=`运行中 · ${s.last_run_time?'上次: '+new Date(s.last_run_time).toLocaleTimeString():'等待首次运行'}`; btn.textContent='停止监控'; btn.className='btn btn-sm btn-danger'; }
+  else { dot.className='status-dot off'; txt.textContent='已停止'; btn.textContent='启动监控'; btn.className='btn btn-sm btn-success'; }
+}
+
+// --- Users ---
+async function loadUsers() {
+  const users = await api('GET', '/api/users');
+  const box = document.getElementById('userList');
+  if (!users.length) { box.innerHTML = '<div class="empty" style="padding:40px"><div class="icon">👋</div><p style="margin:8px 0">欢迎使用！</p><p style="font-size:12px;color:var(--text3);margin-bottom:12px">请先添加要监控的 Steam 用户</p><button class="btn btn-primary" onclick="showAddModal()">+ 添加第一个用户</button></div>'; return; }
+  box.innerHTML = users.map(u => {
+    const active = u.steam_id === currentSteamId ? ' active' : '';
+    const badge = u.is_active
+      ? (u.consecutive_fails > 0 ? `<span class="badge badge-fail">失败×${u.consecutive_fails}</span>`
+        : (u.item_count > 0 ? `<span class="badge badge-ok">正常</span>` : `<span class="badge" style="background:rgba(253,203,110,0.15);color:var(--orange)">待抓取</span>`))
+      : '<span class="badge badge-off">停用</span>';
+    const freqBadge = `<span class="freq-badge freq-${u.monitor_frequency||'medium'}">${({'high':'⚡高','medium':'🕐中','low':'💤低'})[u.monitor_frequency||'medium']}</span>`;
+    return `<div class="user-card${active}" onclick="selectUser('${u.steam_id}')">
+      <div class="user-avatar">👤</div>
+      <div class="user-info">
+        <div class="user-name" style="display:flex;align-items:center;gap:6px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${u.nickname||u.steam_id}</span> ${badge} ${freqBadge}</div>
+        <div class="user-meta"><span>📦 ${u.item_count}件</span><span>Σ ${u.api_total_count}</span></div>
+      </div></div>`;
+  }).join('');
+}
+
+// --- Select user & load inventory ---
+async function selectUser(sid) {
+  currentSteamId = sid; activeCategory = 'all';
+  await loadUsers(); await loadInventory(sid);
+}
+
+async function loadInventory(sid) {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div style="padding:40px;text-align:center"><div class="spinner"></div></div>';
+  const [inv, changes] = await Promise.all([api('GET',`/api/users/${sid}/inventory`), api('GET',`/api/users/${sid}/changes?limit=500`)]);
+  if (inv.error) { c.innerHTML = '<div class="empty"><div class="icon">📭</div><p>暂无数据</p></div>'; return; }
+  currentInventory = inv;
+
+  // Categorize items
+  const categories = {};
+  inv.items.forEach(item => {
+    const type = (item.tags||[]).find(t=>t.category==='Type')?.localized_tag_name || item.type_line || '其他';
+    if (!categories[type]) categories[type] = [];
+    categories[type].push(item);
+  });
+
+  const diff = inv.api_total_count - inv.item_count;
+  const catEntries = Object.entries(categories).sort((a,b)=>b[1].length-a[1].length);
+
+  // Build HTML
+  let html = `<div class="stats-row">
+    <div class="stat-card"><div class="label">API 返回</div><div class="value">${inv.item_count}</div></div>
+    <div class="stat-card"><div class="label">Steam 总数</div><div class="value">${inv.api_total_count}</div></div>
+    <div class="stat-card"><div class="label">存储单元估算</div><div class="value">${diff}</div></div>
+    <div class="stat-card"><div class="label">物品种类</div><div class="value">${inv.summary.length}</div></div>
+  </div>`;
+
+  // Category tabs
+  html += `<div class="cat-tabs"><div class="cat-tab active" onclick="filterCat('all',this)">全部 <span class="cnt">(${inv.items.length})</span></div>`;
+  catEntries.forEach(([cat, items]) => {
+    html += `<div class="cat-tab" onclick="filterCat('${cat}',this)">${cat} <span class="cnt">(${items.length})</span></div>`;
+  });
+  html += `</div>`;
+
+  // Filter bar
+  html += `<div class="filter-bar">
+    <div style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden">
+      <button class="btn btn-sm" id="btnStacked" onclick="setDisplayMode('stacked')" style="border-radius:0;${displayMode==='stacked'?'background:var(--accent);color:#fff':''}">☷ 堆叠</button>
+      <button class="btn btn-sm" id="btnSplit" onclick="setDisplayMode('split')" style="border-radius:0;border-left:1px solid var(--border);${displayMode==='split'?'background:var(--accent);color:#fff':''}">☐ 拆分</button>
+    </div>
+    <select id="sortSelect" onchange="applySort()"><option value="default">默认排序</option><option value="name-asc">名称 A→Z</option><option value="name-desc">名称 Z→A</option><option value="wear-asc">磨损低→高</option><option value="wear-desc">磨损高→低</option><option value="count-desc">数量多→少</option></select>
+    <input type="text" id="searchInput" placeholder="搜索物品名称..." oninput="applySearch()">
+  </div>`;
+
+  // Item grid
+  html += `<div class="item-grid" id="itemGrid"></div>`;
+
+  // Changes & archives tabs
+  const CHANGE_LIMIT = 10;
+  const changeHtml = changes.length===0 ? '<div style="color:var(--text3);text-align:center">暂无变化</div>' :
+    changes.map((c, i) => {
+      const hidden = i >= CHANGE_LIMIT ? ' style="display:none"' : '';
+      const cls = i >= CHANGE_LIMIT ? 'change-item change-extra' : 'change-item';
+      return `<div class="${cls}"${hidden}><span class="change-badge ${c.change_type}">${CHANGETYPE_ZH[c.change_type]||c.change_type}</span><span class="change-detail">${c.name_zh||c.detail?.market_hash_name||c.detail?.item?.market_hash_name||c.detail?.current_state?.market_hash_name||'?'}</span><span class="change-time">${c.change_time?new Date(c.change_time).toLocaleString():''}</span></div>`;
+    }).join('');
+  const expandBtn = changes.length > CHANGE_LIMIT
+    ? `<div id="changeExpand" style="text-align:center;padding:12px 0"><button class="btn btn-sm btn-ghost" onclick="toggleChanges()">展开全部 (${changes.length} 条)</button></div>`
+    : '';
+
+  html += `<div class="panel" style="margin-top:20px"><div class="tabs">
+    <div class="tab active" onclick="switchTab(this,'changesTab')">📜 变化记录</div>
+    <div class="tab" onclick="switchTab(this,'archiveTab')">📅 历史快照</div>
+  </div>
+  <div id="changesTab" class="panel-body">
+    ${changeHtml}
+    ${expandBtn}
+  </div>
+  <div id="archiveTab" class="panel-body" style="display:none"><div style="text-align:center;padding:20px"><div class="spinner"></div></div></div></div>`;
+
+  // Management
+  html += `<div class="panel">
+    <div class="panel-header"><h2>⚙️ 用户管理</h2></div>
+    <div class="panel-body">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:12px">
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:all .15s" onclick="editUser('${sid}')" onmouseover="this.style.borderColor='var(--accent)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="width:40px;height:40px;border-radius:8px;background:rgba(108,92,231,0.1);display:flex;align-items:center;justify-content:center;font-size:18px">✏️</div>
+          <div><div style="font-weight:600;font-size:14px">编辑备注</div><div style="font-size:11px;color:var(--text3);margin-top:2px">修改用户昵称</div></div>
+        </div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:all .15s" onclick="toggleUserActive('${sid}')" onmouseover="this.style.borderColor='var(--accent2)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="width:40px;height:40px;border-radius:8px;background:rgba(0,206,201,0.1);display:flex;align-items:center;justify-content:center;font-size:18px">⏯️</div>
+          <div><div style="font-weight:600;font-size:14px">启用 / 停用</div><div style="font-size:11px;color:var(--text3);margin-top:2px">暂停或恢复监控</div></div>
+        </div>
+        <div style="background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;display:flex;align-items:center;gap:12px;cursor:pointer;transition:all .15s" onclick="deleteUser('${sid}')" onmouseover="this.style.borderColor='var(--red)'" onmouseout="this.style.borderColor='var(--border)'">
+          <div style="width:40px;height:40px;border-radius:8px;background:rgba(214,48,49,0.1);display:flex;align-items:center;justify-content:center;font-size:18px">🗑️</div>
+          <div><div style="font-weight:600;font-size:14px">移入回收站</div><div style="font-size:11px;color:var(--text3);margin-top:2px">数据保留，可随时恢复</div></div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  c.innerHTML = html;
+  renderFilteredItems();
+}
+
+// --- Display mode ---
+function setDisplayMode(mode) {
+  displayMode = mode;
+  document.getElementById('btnStacked').style.cssText = 'border-radius:0;' + (mode==='stacked'?'background:var(--accent);color:#fff':'');
+  document.getElementById('btnSplit').style.cssText = 'border-radius:0;border-left:1px solid var(--border);' + (mode==='split'?'background:var(--accent);color:#fff':'');
+  renderFilteredItems();
+}
+
+// --- Group items by market_hash_name ---
+function groupByName(items) {
+  const groups = {};
+  items.forEach(item => {
+    const key = item.market_hash_name || 'Unknown';
+    if (!groups[key]) groups[key] = { representative: item, items: [] };
+    groups[key].items.push(item);
+  });
+  return Object.values(groups).sort((a, b) => b.items.length - a.items.length);
+}
+
+function renderItemCard(item, count) {
+  const wearName = (item.tags||[]).find(t=>t.category==='Exterior')?.localized_tag_name || '';
+  const wearColor = getWearColor(wearName);
+  const rarityName = item.rarity || '';
+  const rarityColor = getRarityColor(rarityName);
+  const isST = (item.tags||[]).some(t=>t.category==='Quality'&&t.internal_name==='strange') || item.market_hash_name?.includes('StatTrak');
+  const wearVal = item.attributes?.paint_wear;
+  const wearStr = wearVal ? wearVal.toFixed(4) : wearName;
+  const displayName = item.name_zh || item.market_hash_name;
+  return `<div class="item-card" onclick='showDetail(${JSON.stringify(item).replace(/'/g,"&#39;")})'>
+    <div class="item-wear-bar" style="background:${wearColor}"></div>
+    ${isST?'<div class="item-st-badge">ST</div>':''}
+    ${count>1?`<div class="item-count-badge">×${count}</div>`:''}
+    <div class="item-img-box"><img src="${imgUrl(item.icon_url)}" alt="" loading="lazy"></div>
+    <div class="item-info">
+      <div class="item-name" title="${item.market_hash_name}">${displayName}</div>
+      <div class="item-bottom">
+        <span class="item-wear-text">${wearStr}</span>
+        <span class="item-rarity" style="background:${rarityColor}22;color:${rarityColor}">${rarityName}</span>
+      </div>
+    </div></div>`;
+}
+
+// --- Category filter ---
+function filterCat(cat, el) {
+  activeCategory = cat;
+  document.querySelectorAll('.cat-tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  renderFilteredItems();
+}
+
+function applySort() { renderFilteredItems(); }
+function applySearch() { renderFilteredItems(); }
+
+function renderFilteredItems() {
+  if (!currentInventory) return;
+  let items = activeCategory === 'all' ? [...currentInventory.items] : currentInventory.items.filter(i => {
+    const type = (i.tags||[]).find(t=>t.category==='Type')?.localized_tag_name || i.type_line || '其他';
+    return type === activeCategory;
+  });
+  const search = document.getElementById('searchInput')?.value?.toLowerCase() || '';
+  if (search) items = items.filter(i =>
+    i.market_hash_name?.toLowerCase().includes(search) ||
+    (i.name_zh && i.name_zh.toLowerCase().includes(search))
+  );
+  const sort = document.getElementById('sortSelect')?.value || 'default';
+
+  if (displayMode === 'stacked') {
+    // Stacked: group by name, render one card per group
+    let groups = groupByName(items);
+    if (sort === 'name-asc') groups.sort((a,b)=>(a.representative.market_hash_name||'').localeCompare(b.representative.market_hash_name||''));
+    if (sort === 'name-desc') groups.sort((a,b)=>(b.representative.market_hash_name||'').localeCompare(a.representative.market_hash_name||''));
+    if (sort === 'count-desc') groups.sort((a,b)=>b.items.length-a.items.length);
+    document.getElementById('itemGrid').innerHTML = groups.map(g =>
+      renderStackedCard(g.representative, g.items)
+    ).join('');
+  } else {
+    // Split: render each individual item
+    if (sort === 'name-asc') items.sort((a,b)=>(a.market_hash_name||'').localeCompare(b.market_hash_name||''));
+    if (sort === 'name-desc') items.sort((a,b)=>(b.market_hash_name||'').localeCompare(a.market_hash_name||''));
+    if (sort === 'wear-asc') items.sort((a,b)=>(a.attributes?.paint_wear||99)-(b.attributes?.paint_wear||99));
+    if (sort === 'wear-desc') items.sort((a,b)=>(b.attributes?.paint_wear||0)-(a.attributes?.paint_wear||0));
+    document.getElementById('itemGrid').innerHTML = items.map(i => renderItemCard(i)).join('');
+  }
+}
+
+// --- Stacked card ---
+function renderStackedCard(representative, groupItems) {
+  const wearName = (representative.tags||[]).find(t=>t.category==='Exterior')?.localized_tag_name || '';
+  const wearColor = getWearColor(wearName);
+  const rarityName = representative.rarity || '';
+  const rarityColor = getRarityColor(rarityName);
+  const isST = (representative.tags||[]).some(t=>t.category==='Quality'&&t.internal_name==='strange') || representative.market_hash_name?.includes('StatTrak');
+  const count = groupItems.length;
+  // Wear range
+  const wears = groupItems.map(i=>i.attributes?.paint_wear).filter(w=>w!=null);
+  let wearStr = wearName;
+  if (wears.length > 0) {
+    const min = Math.min(...wears).toFixed(4);
+    const max = Math.max(...wears).toFixed(4);
+    wearStr = wears.length === 1 ? min : `${min} ~ ${max}`;
+  }
+  // Escape JSON for onclick
+  const safeJson = JSON.stringify(groupItems.map(i=>i.asset_id)).replace(/'/g,"&#39;");
+  const safeName = (representative.market_hash_name||'').replace(/'/g,"&#39;");
+  const displayName = representative.name_zh || representative.market_hash_name;
+  return `<div class="item-card" onclick="showStackedDetail('${safeName}',${safeJson})">
+    <div class="item-wear-bar" style="background:${wearColor}"></div>
+    ${isST?'<div class="item-st-badge">ST</div>':''}
+    ${count>1?`<div class="item-count-badge">×${count}</div>`:''}
+    <div class="item-img-box"><img src="${imgUrl(representative.icon_url)}" alt="" loading="lazy"></div>
+    <div class="item-info">
+      <div class="item-name" title="${representative.market_hash_name}">${displayName}</div>
+      <div class="item-bottom">
+        <span class="item-wear-text">${wearStr}</span>
+        <span class="item-rarity" style="background:${rarityColor}22;color:${rarityColor}">${rarityName}</span>
+      </div>
+    </div></div>`;
+}
+
+// --- Stacked detail: show all individual items ---
+function showStackedDetail(name, assetIds) {
+  if (!currentInventory) return;
+  const items = assetIds.map(id => currentInventory.items.find(i => i.asset_id === id)).filter(Boolean);
+  if (!items.length) return;
+  const rep = items[0];
+  const rarityColor = getRarityColor(rep.rarity);
+  const marketUrl = `https://steamcommunity.com/market/listings/730/${encodeURIComponent(name)}`;
+
+  let listHtml = items.map((item, idx) => {
+    const w = item.attributes?.paint_wear;
+    const s = item.attributes?.paint_seed;
+    const stickers = (item.attributes?.stickers||[]);
+    const stickerStr = stickers.length ? ` · 印花: ${stickers.map(s=>s.name).join(', ')}` : '';
+    return `<div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <span style="color:var(--text3);font-size:11px">#${idx+1}</span>
+        <span style="font-size:13px;margin-left:6px">${w?w.toFixed(6):'—'}</span>
+        ${s?`<span style="font-size:11px;color:var(--text3);margin-left:8px">种子:${s}</span>`:''}
+      </div>
+      <div style="font-size:11px;color:var(--text3);max-width:50%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${stickerStr}">${stickerStr}</div>
+    </div>`;
+  }).join('');
+
+  document.getElementById('detailContent').innerHTML = `
+    <div class="modal-detail-header">
+      <div class="modal-detail-img"><img src="${imgUrl(rep.icon_url)}" alt=""></div>
+      <div class="modal-detail-title">
+        <h2 style="color:${rarityColor}">${name}</h2>
+        <div class="meta-row">数量: <strong>${items.length}</strong> 件</div>
+        <div class="meta-row">品质: <span style="color:${rarityColor}">${rep.rarity||'—'}</span></div>
+        <div class="meta-row">类型: ${rep.type_line||'—'}</div>
+      </div>
+      <button class="close-btn" onclick="document.getElementById('detailModal').style.display='none'">×</button>
+    </div>
+    <div class="modal-detail-body">
+      <h4 style="margin-bottom:8px;font-size:14px">全部 ${items.length} 件</h4>
+      ${listHtml}
+    </div>
+    <div class="modal-actions">
+      <a href="${marketUrl}" target="_blank" class="btn btn-ghost">🛒 查看市场</a>
+      <button class="btn btn-primary" onclick="document.getElementById('detailModal').style.display='none'">关闭</button>
+    </div>`;
+  document.getElementById('detailModal').style.display = '';
+}
+
+// --- Detail modal ---
+function showDetail(item) {
+  const wearName = (item.tags||[]).find(t=>t.category==='Exterior')?.localized_tag_name || '';
+  const wearColor = getWearColor(wearName);
+  const rarityName = item.rarity || '';
+  const rarityColor = getRarityColor(rarityName);
+  const stickers = item.attributes?.stickers || [];
+  const wearVal = item.attributes?.paint_wear;
+  const seed = item.attributes?.paint_seed;
+  const phase = item.attributes?.phase;
+  const marketUrl = `https://steamcommunity.com/market/listings/730/${encodeURIComponent(item.market_hash_name)}`;
+
+  let stickersHtml = '';
+  if (stickers.length) {
+    stickersHtml = `<h4 style="margin:12px 0 8px;font-size:14px">印花 (${stickers.length})</h4><div class="sticker-grid">`;
+    stickers.forEach(s => {
+      stickersHtml += `<div class="sticker-item">${s.name}${s.wear?` (刮损: ${s.wear.toFixed(2)})`:''}</div>`;
+    });
+    stickersHtml += '</div>';
+  }
+
+  document.getElementById('detailContent').innerHTML = `
+    <div class="modal-detail-header">
+      <div class="modal-detail-img"><img src="${imgUrl(item.icon_url)}" alt=""></div>
+      <div class="modal-detail-title">
+        <h2 style="color:${rarityColor}">${item.name_zh || item.market_hash_name}</h2>
+        ${item.name_zh ? `<div class="meta-row" style="font-size:12px;color:var(--text3)">${item.market_hash_name}</div>` : ''}
+        <div class="meta-row">类型: ${item.type_line||'—'}</div>
+        <div class="meta-row">品质: <span style="color:${rarityColor}">${rarityName}</span></div>
+        <div class="meta-row">外观: <span style="color:${wearColor}">${wearName}</span></div>
+        ${wearVal?`<div class="meta-row">磨损: ${wearVal.toFixed(6)}</div>`:''}
+        ${seed?`<div class="meta-row">图案种子: ${seed}</div>`:''}
+        ${phase?`<div class="meta-row">阶段: ${phase}</div>`:''}
+        <div class="meta-row">asset_id: ${item.asset_id}</div>
+      </div>
+      <button class="close-btn" onclick="document.getElementById('detailModal').style.display='none'">×</button>
+    </div>
+    <div class="modal-detail-body">
+      ${stickersHtml}
+    </div>
+    <div class="modal-actions">
+      <a href="${marketUrl}" target="_blank" class="btn btn-ghost">🛒 查看市场</a>
+      <button class="btn btn-primary" onclick="document.getElementById('detailModal').style.display='none'">关闭</button>
+    </div>`;
+  document.getElementById('detailModal').style.display = '';
+}
+
+// --- User management ---
+function showAddModal() { editingSteamId=null; document.getElementById('modalTitle').textContent='添加监控用户'; document.getElementById('modalSteamId').value=''; document.getElementById('modalSteamId').disabled=false; document.getElementById('modalNickname').value=''; document.getElementById('addModal').style.display=''; }
+function editUser(sid) {
+  editingSteamId=sid;
+  document.getElementById('modalTitle').textContent='编辑用户';
+  document.getElementById('modalSteamId').value=sid;
+  document.getElementById('modalSteamId').disabled=false;
+  const card = document.querySelector('.user-card.active .user-name');
+  let nick = '';
+  if (card) {
+    nick = card.textContent.replace(/正常|失败×\d+|已停用|待抓取|⚡高|🕐中|💤低/g,'').trim();
+    if (nick === sid) nick = '';
+  }
+  document.getElementById('modalNickname').value=nick;
+  document.getElementById('addModal').style.display='';
+}
+
+// --- 从输入中提取 Steam ID ---
+function extractSteamId(raw) {
+  raw = raw.trim();
+  if (!raw) return '';
+  // 纯数字 17 位，且以 7656119 开头
+  if (/^\d{17}$/.test(raw)) return raw.startsWith('7656119') ? raw : '';
+  // profiles URL
+  let m = raw.match(/steamcommunity\.com\/profiles\/(\d{17})/);
+  if (m) return m[1];
+  // 提取文本中的 17 位数字
+  m = raw.match(/(\d{17})/);
+  if (m) return m[1];
+  return '';
+}
+
+// 实时校验输入框
+function validateSteamIdInput() {
+  const input = document.getElementById('modalSteamId');
+  const hint = document.getElementById('steamIdHint');
+  if (!input || !hint) return;
+  const raw = input.value.trim();
+  if (!raw) {
+    hint.textContent = '支持: 17位数字ID / steamcommunity.com/profiles/xxx';
+    hint.style.color = 'var(--text3)';
+    input.style.borderColor = 'var(--border)';
+    return;
+  }
+  const sid = extractSteamId(raw);
+  if (sid) {
+    if (sid !== raw) {
+      hint.textContent = '已提取 ID: ' + sid;
+    } else {
+      hint.textContent = '有效的 Steam ID';
+    }
+    hint.style.color = 'var(--green)';
+    input.style.borderColor = 'var(--green)';
+  } else if (/steamcommunity\.com\/id\//.test(raw)) {
+    hint.textContent = '自定义短链接暂不支持，请使用 profiles/xxx 格式';
+    hint.style.color = 'var(--red)';
+    input.style.borderColor = 'var(--red)';
+  } else {
+    hint.textContent = '无效：需 17 位数字 (7656119xxxx) 或 profiles 链接';
+    hint.style.color = 'var(--red)';
+    input.style.borderColor = 'var(--red)';
+  }
+}
+
+async function saveUser() {
+  const rawInput=document.getElementById('modalSteamId').value;
+  const sid=extractSteamId(rawInput), nick=document.getElementById('modalNickname').value.trim();
+  if(!sid){
+    if(rawInput.trim()) toast('无效的 Steam ID：需 17 位数字且以 7656119 开头');
+    else toast('请输入 Steam ID');
+    return;
+  }
+  document.getElementById('modalSteamId').value = sid;
+  if(editingSteamId){
+    if(sid !== editingSteamId){
+      // Steam ID 变了 → 新建 + 旧的移入回收站
+      await api('POST','/api/users',{steam_id:sid, nickname:nick});
+      await api('DELETE',`/api/users/${editingSteamId}`);
+      toast(`已创建 ${sid}，旧用户已移入回收站`);
+    } else {
+      await api('PUT',`/api/users/${editingSteamId}`,{nickname:nick});
+      toast('已更新');
+    }
+  }
+  else{const r=await api('POST','/api/users',{steam_id:sid,nickname:nick});if(r.error){toast(r.error);return;}toast('已添加');}
+  document.getElementById('addModal').style.display='none'; await loadUsers();
+}
+async function toggleUserActive(sid) { const users=await api('GET','/api/users'); const u=users.find(x=>x.steam_id===sid); if(!u)return; await api('PUT',`/api/users/${sid}`,{is_active:!u.is_active}); toast(u.is_active?'已停用':'已启用'); await loadUsers(); if(currentSteamId===sid) await loadInventory(sid); }
+
+// --- 数据导出 / 导入 ---
+async function doExport() {
+  try {
+    const r = await api('POST', '/api/export');
+    if (r.ok) {
+      toast(`已导出 ${r.user_count} 个用户 → ${r.filepath}`);
+      const a = document.createElement('a');
+      a.href = `/api/export/download?file=${encodeURIComponent(r.filename)}`;
+      a.download = r.filename;
+      a.click();
+    } else {
+      toast(r.error || '导出失败');
+    }
+  } catch(e) {
+    toast('导出请求失败');
+  }
+}
+
+async function doImport(input) {
+  const file = input.files[0];
+  if (!file) return;
+  if (!file.name.endsWith('.cs2mon')) {
+    toast('仅支持 .cs2mon 文件');
+    input.value = '';
+    return;
+  }
+  const form = new FormData();
+  form.append('file', file);
+  try {
+    const token = localStorage.getItem('auth_token') || '';
+    const resp = await fetch('/api/import', {
+      method: 'POST',
+      headers: token ? {'Authorization': 'Bearer ' + token} : {},
+      body: form,
+    });
+    const r = await resp.json();
+    if (r.ok) {
+      toast(`导入完成: 新建 ${r.stats.created}, 更新 ${r.stats.updated}`);
+      await loadUsers();
+      showManagePanel();
+    } else {
+      toast(r.error || '导入失败');
+    }
+  } catch(e) {
+    toast('导入请求失败');
+  }
+  input.value = '';
+}
+
+// --- 频率管理 ---
+async function setUserFrequency(sid, freq) {
+  const prevVal = freq; // store the new value
+  try {
+    const r = await api('POST', `/api/users/${sid}/frequency`, {frequency: freq});
+    if (r.ok) {
+      toast(`频率已切换为 ${({'high':'⚡ 高频','medium':'🕐 中频','low':'💤 低频'})[freq]}`);
+      await loadUsers();
+      // 刷新管理面板中的频率状态
+      setTimeout(showManagePanel, 200);
+    } else {
+      toast(r.error || '设置失败');
+      // 回弹 UI：重新渲染管理面板
+      setTimeout(showManagePanel, 200);
+    }
+  } catch(e) {
+    toast('请求失败，请重试');
+    setTimeout(showManagePanel, 200);
+  }
+}
+
+// --- 总管理面板（右上角按钮触发，管理所有用户） ---
+async function showManagePanel() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div style="padding:40px;text-align:center"><div class="spinner"></div></div>';
+  const users = await api('GET', '/api/users');
+  const trash = await api('GET', '/api/trash');
+
+  let html = `<div class="panel">
+    <div class="panel-header">
+      <h2>⚙️ 用户管理</h2>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm btn-primary" onclick="showAddModal()">+ 添加</button>
+        <button class="btn btn-sm btn-ghost" onclick="showBatchImport()">📋 批量导入</button>
+        <button class="btn btn-sm btn-ghost" onclick="doExport()" title="导出全部数据">📤 导出</button>
+        <button class="btn btn-sm btn-ghost" onclick="document.getElementById('importFile').click()" title="从文件导入">📥 导入</button>
+        <input type="file" id="importFile" accept=".cs2mon" style="display:none" onchange="doImport(this)">
+      </div>
+    </div>
+    <div class="panel-body" style="padding:0">
+      <table class="inv-table" style="table-layout:fixed">
+        <colgroup>
+          <col style="width:auto">
+          <col style="width:130px">
+          <col style="width:70px">
+          <col style="width:80px">
+          <col style="width:65px">
+          <col style="width:120px">
+        </colgroup>
+        <thead><tr><th>昵称</th><th>Steam ID</th><th>状态</th><th>库存</th><th>频率</th><th>操作</th></tr></thead>
+        <tbody>`;
+
+  if (!users.length) {
+    html += '<tr><td colspan="6" style="text-align:center;color:var(--text3);padding:24px">暂无监控用户，点击右上角"添加用户"</td></tr>';
+  }
+  for (const u of users) {
+    const statusBadge = u.is_active
+      ? (u.consecutive_fails > 0 ? `<span class="badge badge-fail" style="font-size:11px;padding:2px 6px">失败×${u.consecutive_fails}</span>`
+        : (u.item_count > 0 ? `<span class="badge badge-ok" style="font-size:11px;padding:2px 6px">正常</span>` : `<span class="badge" style="background:rgba(253,203,110,0.15);color:var(--orange);font-size:11px;padding:2px 6px">待抓取</span>`))
+      : '<span class="badge badge-off" style="font-size:11px;padding:2px 6px">已停用</span>';
+    const failHint = u.last_error_msg ? `<div style="font-size:11px;color:var(--red);margin-top:2px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${u.last_error_msg}">${u.last_error_msg}</div>` : '';
+    const freq = u.monitor_frequency || 'medium';
+    const freqLabels = {high: '⚡', medium: '🕐', low: '💤'};
+    const freqTitles = {high: '高频 5min', medium: '中频 10min', low: '低频 20min'};
+    const freqSelect = `<select class="freq-select" onchange="setUserFrequency('${u.steam_id}', this.value); this.blur()" onclick="event.stopPropagation()" title="${freqTitles[freq]}">
+      <option value="high" ${freq==='high'?'selected':''}>⚡ 高</option>
+      <option value="medium" ${freq==='medium'?'selected':''}>🕐 中</option>
+      <option value="low" ${freq==='low'?'selected':''}>💤 低</option>
+    </select>`;
+    html += `<tr>
+      <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>${u.nickname||'—'}</strong>${failHint}</td>
+      <td style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${u.steam_id}">${u.steam_id}</td>
+      <td>${statusBadge}</td>
+      <td style="font-size:12px">${u.item_count} / ${u.api_total_count}</td>
+      <td>${freqSelect}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-ghost" title="编辑备注" onclick="editUser('${u.steam_id}');showManagePanel()">✏️</button>
+        <button class="btn btn-sm btn-ghost" title="${u.is_active?'停用':'启用'}" onclick="toggleUserActive('${u.steam_id}');setTimeout(showManagePanel,300)">${u.is_active?'⏸':'▶'}</button>
+        <button class="btn btn-sm btn-ghost" style="color:var(--red)" title="移入回收站" onclick="deleteUser('${u.steam_id}');setTimeout(showManagePanel,300)">🗑️</button>
+      </td>
+    </tr>`;
+  }
+  html += '</tbody></table></div></div>';
+
+  // 频率管理面板
+  html += `<div class="freq-panel" id="freqPanel">
+    <h3>📊 分层调度概览</h3>
+    <div id="freqPanelContent" style="text-align:center;padding:12px;color:var(--text3)">加载中...</div>
+  </div>`;
+
+  // 回收站
+  if (trash.length) {
+    html += `<div class="panel" style="margin-top:16px">
+      <div class="panel-header"><h2>🗑️ 回收站</h2><span style="font-size:12px;color:var(--text3)">${trash.length} 个用户</span></div>
+      <div class="panel-body" style="padding:0">
+        <table class="inv-table">
+          <thead><tr><th>昵称</th><th>Steam ID</th><th>库存</th><th>删除时间</th><th>操作</th></tr></thead>
+          <tbody>`;
+    for (const u of trash) {
+      html += `<tr>
+        <td><strong>${u.nickname||'—'}</strong></td>
+        <td style="font-size:12px;color:var(--text3)">${u.steam_id}</td>
+        <td>${u.item_count} 件</td>
+        <td style="font-size:12px;color:var(--text3)">${u.deleted_at?new Date(u.deleted_at).toLocaleString():'—'}</td>
+        <td style="white-space:nowrap">
+          <button class="btn btn-sm btn-success" onclick="restoreUser('${u.steam_id}');setTimeout(showManagePanel,300)">恢复</button>
+          <button class="btn btn-sm btn-danger" onclick="permanentDeleteUser('${u.steam_id}');setTimeout(showManagePanel,300)">永久删除</button>
+        </td>
+      </tr>`;
+    }
+    html += '</tbody></table></div></div>';
+  }
+
+  c.innerHTML = html;
+  // 异步加载频率面板
+  loadFreqPanel();
+}
+
+// --- 频率面板 ---
+async function loadFreqPanel() {
+  const el = document.getElementById('freqPanelContent');
+  if (!el) return;
+  try {
+    const fs = await api('GET', '/api/frequency/status');
+    const labels = {high: '⚡ 高频', medium: '🕐 中频', low: '💤 低频'};
+    let html = '';
+    for (const [tier, label] of Object.entries(labels)) {
+      const count = fs.tier_user_counts?.[tier] || 0;
+      const interval = fs.intervals?.[tier] || '—';
+      const lastRun = fs.last_runs?.[tier] || '';
+      const lastTime = lastRun ? new Date(lastRun).toLocaleTimeString() : '—';
+      html += `<div class="freq-tier-row">
+        <span class="freq-tier-name">${label}</span>
+        <span class="freq-tier-count">${count}人</span>
+        <span style="color:var(--text3);font-size:11px">间隔 ${interval}分钟</span>
+        <span class="freq-tier-last">上次: ${lastTime}</span>
+      </div>`;
+    }
+    if (!fs.enabled) {
+      html += '<div style="margin-top:8px;font-size:11px;color:var(--text3);text-align:center">⚠️ 分层调度未启用，当前使用统一间隔模式</div>';
+    }
+    el.innerHTML = html;
+  } catch(e) {
+    el.innerHTML = '<span style="color:var(--red)">加载失败</span>';
+  }
+}
+async function deleteUser(sid) {
+  if(!confirm(`确定将 ${sid} 移入回收站？\n数据会被保留，可随时恢复。`)) return;
+  const r = await api('DELETE', `/api/users/${sid}`);
+  toast(r.msg || '已移入回收站');
+  if (currentSteamId === sid) {
+    currentSteamId = null;
+    document.getElementById('content').innerHTML = '<div class="empty"><div class="icon">👈</div><p>选择左侧用户</p></div>';
+  }
+  await loadUsers();
+}
+
+// --- 回收站 ---
+async function showTrash() {
+  const c = document.getElementById('content');
+  c.innerHTML = '<div style="padding:20px;text-align:center"><div class="spinner"></div></div>';
+  const trash = await api('GET', '/api/trash');
+  if (!trash.length) {
+    c.innerHTML = '<div class="empty"><div class="icon">🗑️</div><p>回收站为空</p></div>';
+    return;
+  }
+  c.innerHTML = `<div class="panel"><div class="panel-header"><h2>🗑️ 回收站</h2><span style="font-size:12px;color:var(--text3)">${trash.length} 个用户</span></div><div class="panel-body" style="padding:0">
+    <table class="inv-table"><thead><tr><th>用户</th><th>Steam ID</th><th>库存</th><th>删除时间</th><th>操作</th></tr></thead><tbody>
+    ${trash.map(u => `<tr>
+      <td><strong>${u.nickname||'—'}</strong></td>
+      <td style="font-size:12px;color:var(--text3)">${u.steam_id}</td>
+      <td>${u.item_count} 件</td>
+      <td style="font-size:12px;color:var(--text3)">${u.deleted_at ? new Date(u.deleted_at).toLocaleString() : '—'}</td>
+      <td>
+        <button class="btn btn-sm btn-success" onclick="restoreUser('${u.steam_id}')">恢复</button>
+        <button class="btn btn-sm btn-danger" onclick="permanentDeleteUser('${u.steam_id}')">永久删除</button>
+      </td>
+    </tr>`).join('')}
+    </tbody></table></div></div>`;
+}
+
+async function restoreUser(sid) {
+  const r = await api('POST', `/api/users/${sid}/restore`);
+  toast(r.msg || '已恢复');
+  await loadUsers();
+  await showTrash();
+}
+
+async function permanentDeleteUser(sid) {
+  if(!confirm(`⚠️ 永久删除 ${sid}？\n所有库存数据、历史快照、变化记录将被彻底清除，不可恢复！`)) return;
+  if(!confirm('再次确认：真的要永久删除吗？')) return;
+  const r = await api('DELETE', `/api/users/${sid}/permanent`);
+  toast(r.msg || '已永久删除');
+  await showTrash();
+}
+
+// --- Monitor control ---
+async function toggleMonitor() { const s=await api('GET','/api/status'); if(s.monitor_running){await api('POST','/api/monitor/stop');toast('已停止');}else{await api('POST','/api/monitor/start');toast('已启动');} await refreshStatus(); }
+async function fetchNow() { const btn=document.getElementById('btnFetchNow'); btn.disabled=true; btn.innerHTML='<span class="spinner"></span>'; try{const r=await api('POST','/api/monitor/fetch-now'); toast(r.ok?`完成: 成功${r.stats?.success||0} 失败${r.stats?.fail||0}`:'失败');}catch(e){toast('请求失败');} btn.disabled=false; btn.innerHTML='⟳ 立即爬取'; await loadUsers(); if(currentSteamId) await loadInventory(currentSteamId); await refreshStatus(); }
+
+function switchTab(el, id) { el.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); el.classList.add('active'); el.closest('.panel').querySelectorAll('.panel-body[id$="Tab"]').forEach(p=>p.style.display='none'); document.getElementById(id).style.display=''; if(id==='archiveTab') loadArchives(currentSteamId); }
+function toggleChanges() {
+  const extras = document.querySelectorAll('.change-extra');
+  const btn = document.querySelector('#changeExpand .btn');
+  if (!extras.length || !btn) return;
+  const hidden = extras[0].style.display === 'none';
+  extras.forEach(el => el.style.display = hidden ? '' : 'none');
+  btn.textContent = hidden ? '收起' : `展开全部 (${document.querySelectorAll('.change-item').length} 条)`;
+}
+async function loadArchives(sid) {
+  const [a, sched] = await Promise.all([
+    api('GET', `/api/users/${sid}/archives`),
+    api('GET', '/api/schedule'),
+  ]);
+  const el = document.getElementById('archiveTab');
+
+  // 创建快照按钮 + 调度设置
+  const hourOpts = Array.from({length:24}, (_,i) => `<option value="${i}" ${sched.snapshot_hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('');
+  const intervalOpts = [
+    [0,'每日定时'], [1,'每1小时'], [2,'每2小时'], [3,'每3小时'],
+    [4,'每4小时'], [6,'每6小时'], [8,'每8小时'], [12,'每12小时'],
+  ].map(([v,l]) => `<option value="${v}" ${sched.snapshot_interval_hours===v?'selected':''}>${l}</option>`).join('');
+
+  const schedulePanel = `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:16px">
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px">⏱️ 自动归档设置</div>
+      <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+        <label style="font-size:12px;color:var(--text2)">频率:
+          <select id="schedInterval" onchange="updateSchedUI()" style="padding:4px;background:var(--card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">${intervalOpts}</select>
+        </label>
+        <label style="font-size:12px;color:var(--text2)" id="schedHourLabel">时间:
+          <select id="schedHour" style="padding:4px;background:var(--card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">${hourOpts}</select>
+        </label>
+        <label style="font-size:12px;color:var(--text2)">监控间隔:
+          <select id="schedFetchMin" style="padding:4px;background:var(--card);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px">
+            ${[1,2,3,5,10,15,30,60].map(m => `<option value="${m}" ${sched.fetch_interval_minutes===m?'selected':''}>${m}分钟</option>`).join('')}
+          </select>
+        </label>
+        <button class="btn btn-sm btn-primary" onclick="saveSchedule()">保存</button>
+        <span id="schedMsg" style="font-size:12px;color:var(--text3)"></span>
+      </div>
+    </div>`;
+
+  const createBtn = `<div style="margin-bottom:12px"><button class="btn btn-sm btn-primary" onclick="createSnapshot('${sid}')">📸 创建当前快照</button> <span id="snapshotMsg" style="font-size:12px;color:var(--text3);margin-left:8px"></span></div>`;
+
+  if (!a.length) {
+    el.innerHTML = schedulePanel + createBtn + '<div style="color:var(--text3);text-align:center">暂无历史快照，点击上方按钮创建第一条</div>';
+    updateSchedUI();
+    return;
+  }
+
+  const opts = a.map(x=>`<option value="${x.id}">${x.date} (${x.item_count}件)</option>`).join('');
+  el.innerHTML = schedulePanel + createBtn + `
+    <div style="margin-bottom:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <select id="compareA" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px">${opts}</select>
+      <span style="color:var(--text3)">vs</span>
+      <select id="compareB" style="padding:6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px">
+        ${a.length>1?`<option value="${a[1].id}" selected>${a[1].date} (${a[1].item_count}件)</option>`:''}${opts}
+      </select>
+      <button class="btn btn-sm btn-primary" onclick="runCompare('${sid}')">对比</button>
+    </div>
+    <div id="compareResult"></div>
+    <div style="margin-top:16px">
+      ${a.map(x=>`<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div style="font-size:12px;color:var(--accent)">📅 ${x.date} · ${x.item_count}件</div><div style="font-size:13px;color:var(--text2)">${x.top_items.map(t=>t.name+'×'+t.count).join(', ')}</div></div>`).join('')}
+    </div>`;
+  updateSchedUI();
+}
+
+function updateSchedUI() {
+  const interval = parseInt(document.getElementById('schedInterval')?.value || '0');
+  const hourLabel = document.getElementById('schedHourLabel');
+  if (hourLabel) hourLabel.style.display = interval > 0 ? 'none' : '';
+}
+
+async function saveSchedule() {
+  const interval = parseInt(document.getElementById('schedInterval').value);
+  const hour = parseInt(document.getElementById('schedHour').value);
+  const fetchMin = parseInt(document.getElementById('schedFetchMin').value);
+  const msg = document.getElementById('schedMsg');
+  try {
+    const r = await api('PUT', '/api/schedule', {
+      snapshot_hour: hour,
+      snapshot_interval_hours: interval,
+      fetch_interval_minutes: fetchMin,
+    });
+    if (r.ok) {
+      const desc = interval > 0 ? `每${interval}小时` : `每日 ${String(hour).padStart(2,'0')}:00`;
+      msg.textContent = `已保存: ${desc}, 监控间隔${fetchMin}分钟`;
+      toast('调度设置已更新');
+    } else {
+      msg.textContent = '保存失败';
+    }
+  } catch(e) {
+    msg.textContent = '请求失败';
+  }
+}
+
+async function createSnapshot(sid) {
+  const msg = document.getElementById('snapshotMsg');
+  if (msg) msg.textContent = '创建中...';
+  try {
+    const r = await api('POST', `/api/users/${sid}/snapshot`);
+    if (r.ok) {
+      if (msg) msg.textContent = r.msg;
+      toast(r.msg);
+      loadArchives(sid);  // 刷新列表
+    } else {
+      if (msg) msg.textContent = r.error || '失败';
+      toast(r.error || '创建失败');
+    }
+  } catch(e) {
+    if (msg) msg.textContent = '请求失败';
+  }
+}
+
+// --- 批量导入 ---
+function showBatchImport() {
+  document.getElementById('batchInput').value = '';
+  document.getElementById('batchResult').style.display = 'none';
+  document.getElementById('batchResult').innerHTML = '';
+  document.getElementById('btnBatchImport').disabled = false;
+  document.getElementById('batchModal').style.display = '';
+  document.getElementById('batchInput').focus();
+}
+
+async function doBatchImport() {
+  const text = document.getElementById('batchInput').value.trim();
+  if (!text) { toast('请输入内容'); return; }
+  const btn = document.getElementById('btnBatchImport');
+  btn.disabled = true;
+  btn.textContent = '导入中...';
+  try {
+    const r = await api('POST', '/api/users/batch', {text});
+    const el = document.getElementById('batchResult');
+    el.style.display = '';
+    if (r.ok) {
+      let html = `<div style="font-size:13px;margin-bottom:8px">共 ${r.total} 条：✅ 成功 ${r.success}，❌ 失败 ${r.fail}</div>`;
+      html += '<table class="inv-table" style="font-size:12px"><thead><tr><th>#</th><th>输入</th><th>Steam ID</th><th>备注</th><th>结果</th></tr></thead><tbody>';
+      for (const item of r.results) {
+        const status = item.ok
+          ? `<span style="color:var(--green)">${item.msg||'OK'}</span>`
+          : `<span style="color:var(--red)">${item.error}</span>`;
+        html += `<tr>
+          <td>${item.line}</td>
+          <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.input}">${item.input}</td>
+          <td style="font-size:11px">${item.steam_id||'—'}</td>
+          <td>${item.nickname||'—'}</td>
+          <td>${status}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      el.innerHTML = html;
+      if (r.success > 0) {
+        toast(`已导入 ${r.success} 个用户`);
+        loadUsers();
+      }
+    } else {
+      el.innerHTML = `<div style="color:var(--red)">${r.error}</div>`;
+    }
+  } catch(e) {
+    toast('请求失败');
+  }
+  btn.disabled = false;
+  btn.textContent = '导入';
+}
+
+async function runCompare(sid) {
+  const idA = document.getElementById('compareA').value;
+  const idB = document.getElementById('compareB').value;
+  if (idA === idB) { toast('请选择两个不同的快照'); return; }
+  const el = document.getElementById('compareResult');
+  el.innerHTML = '<div style="text-align:center;padding:10px"><div class="spinner"></div></div>';
+  const d = await api('GET', `/api/users/${sid}/compare?a=${idA}&b=${idB}`);
+  if (d.error) { el.innerHTML = '<div style="color:var(--red)">'+d.error+'</div>'; return; }
+  if (!d.diff.length) { el.innerHTML = '<div style="color:var(--text3);text-align:center">两次快照无差异</div>'; return; }
+  const fmtDate = s => s ? s.replace(/(\d{2})(\d{2})(\d{2})(\d{2})/, '$1年$2月$3日$4时') : '';
+  el.innerHTML = '<div style="font-size:13px;margin-bottom:8px;color:var(--text2)">📅 '+fmtDate(d.date_a)+'（'+d.count_a+'件）→ '+fmtDate(d.date_b)+'（'+d.count_b+'件）</div>'
+    +'<table class="inv-table"><thead><tr><th>物品名称</th><th>快照A数量</th><th>快照B数量</th><th>变化量</th></tr></thead><tbody>'
+    +d.diff.map(function(i){ var c=i.delta>0?'var(--green)':'var(--red)'; var label=i.delta>0?'增加':'减少'; return '<tr><td>'+i.name+'</td><td>'+i.count_a+'</td><td>'+i.count_b+'</td><td style="color:'+c+';font-weight:700">'+label+' '+Math.abs(i.delta)+'</td></tr>'; }).join('')
+    +'</tbody></table>';
+}
+
+// --- Init ---
+async function init() {
+  // 检查认证
+  const ok = await checkAuth();
+  if (!ok) { showLogin(); return; }
+  await refreshStatus(); await loadUsers(); startHeartbeat(); connectWS();
+  const s = await api('GET','/api/status');
+  if (!s.monitor_running) { await api('POST','/api/monitor/start'); toast('监控已自动启动'); await refreshStatus(); }
+  pollTimer = setInterval(async()=>{ await refreshStatus(); await loadUsers(); }, 30000);
+}
+init();
+</script>
+</body>
+</html>

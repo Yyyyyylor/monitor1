@@ -1,0 +1,34 @@
+[project]
+name = "steam-cs2-inventory-monitor"
+version = "2.0.0"
+description = "Monitor Steam CS2 inventory changes with paginated fetching, swap detection, and event-sourced storage"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27,<1",
+    "apscheduler>=3.10,<4",
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "aiosqlite>=0.20,<1",
+    "pydantic-settings>=2.0,<3",
+    "pydantic>=2.0,<3",
+    "loguru>=0.7,<1",
+    "aiohttp>=3.9,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9",
+    "pytest-asyncio>=0.23,<1",
+    "pytest-mock>=3.12",
+    "httpx>=0.27,<1",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
