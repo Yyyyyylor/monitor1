@@ -1,0 +1,48 @@
+# 知识卡导出索引文件
+schema_version: 1
+locale: zh-CN
+branch: main
+nodes_managed: true
+exported_at: "2026-07-31T07:07:37Z"
+modules:
+    "":
+        dir_name: Steam CS2 库存监控器项目根
+        title: Steam CS2 库存监控器项目根
+        scope:
+            - README.md
+            - .gitignore
+            - Dockerfile
+            - docker-compose.yml
+            - pyproject.toml
+            - install.bat
+            - run_web.py
+            - start.bat
+            - .env.example
+        source_files: []
+        children:
+            - core_runtime
+            - tests
+        depends_on: []
+        related_to: []
+    core_runtime:
+        dir_name: 核心运行时与配置入口
+        title: 核心运行时与配置入口
+        scope:
+            - src/main.py
+            - src/config.py
+            - src/utils.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: tests
+    tests:
+        dir_name: Steam 库存监控测试套件
+        title: Steam 库存监控测试套件
+        scope:
+            - tests/
+        source_files: []
+        children: []
+        depends_on: []
+        related_to:
+            - path: core_runtime

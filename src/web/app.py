@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets
 import time
 import zlib
@@ -67,9 +68,12 @@ class WebState:
     ws_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     scheduler_ref: Any = None
     heartbeat_event: asyncio.Event = field(default_factory=asyncio.Event)
-    login_ratelimit: dict[str, tuple[int, float]] = field(default_factory=dict)
     # 分层调度状态
     tier_tasks: dict[str, asyncio.Task | None] = field(default_factory=lambda: {"high": None, "medium": None, "low": None})
+    tier_events: dict[str, asyncio.Event] = field(default_factory=lambda: {
+        "high": asyncio.Event(), "medium": asyncio.Event(), "low": asyncio.Event()
+    })
+    web_password_initialized: bool = False
 
 
 _state = WebState()
@@ -78,8 +82,8 @@ _state = WebState()
 # 认证工具
 # ---------------------------------------------------------------------------
 
-def _get_web_password() -> str:
-    """获取 Web 密码，空则自动生成。"""
+def _init_web_password() -> str:
+    """启动时一次性初始化 Web 密码，空则自动生成。"""
     pwd = settings.web_password
     if not pwd:
         pwd = secrets.token_hex(8)
@@ -89,16 +93,30 @@ def _get_web_password() -> str:
         logger.warning("  %s", pwd)
         logger.warning("请妥善保存，或编辑 .env 中的 WEB_PASSWORD。")
         logger.warning("=" * 60)
+    _state.web_password_initialized = True
     return pwd
+
+
+def _get_web_password() -> str:
+    """获取已初始化的 Web 密码。"""
+    if not _state.web_password_initialized:
+        return _init_web_password()
+    return settings.web_password
+
+
+def _hash_password(password: str) -> str:
+    """对密码做 SHA-256 哈希，避免明文参与 HMAC。"""
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 def _make_token(password: str) -> str:
     """使用 HMAC-SHA256 生成完整认证 token（密码 hash + 过期时间）。"""
     expires = int(time.time()) + TOKEN_TTL
     payload = f"{expires}"
+    pwd_hash = _hash_password(password)
     sig = hmac.new(
         _TOKEN_SECRET.encode(),
-        f"{password}:{payload}".encode(),
+        f"{pwd_hash}:{payload}".encode(),
         hashlib.sha256,
     ).hexdigest()
     return f"{expires}.{sig}"
@@ -115,9 +133,10 @@ def _verify_token(token: str) -> bool:
         sig = parts[1]
         if time.time() > expires:
             return False
+        pwd_hash = _hash_password(password)
         expected = hmac.new(
             _TOKEN_SECRET.encode(),
-            f"{password}:{expires}".encode(),
+            f"{pwd_hash}:{expires}".encode(),
             hashlib.sha256,
         ).hexdigest()
         return hmac.compare_digest(sig, expected)
@@ -184,18 +203,23 @@ async def api_heartbeat(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-# 登录限速：IP → (失败次数, 锁定截止时间戳)
-_state.login_ratelimit: dict[str, tuple[int, float]] = {}
+# 登录限速常量
 _LOGIN_MAX_ATTEMPTS = 5
 _LOGIN_LOCKOUT_SECONDS = 300  # 5 分钟
 
 
 async def api_login(request: web.Request) -> web.Response:
-    """登录接口 — 验证密码，返回 token（含速率限制）。"""
-    # 速率限制
+    """登录接口 — 验证密码，返回 token（含速率限制，持久化到数据库）。"""
+    from src.db.repository import (
+        get_login_rate_limit,
+        update_login_rate_limit,
+        clear_login_rate_limit,
+    )
+
+    # 速率限制（从数据库读取，重启不丢失）
     client_ip = request.remote or "127.0.0.1"
     now_ts = time.time()
-    attempts, lock_until = _state.login_ratelimit.get(client_ip, (0, 0))
+    attempts, lock_until = await get_login_rate_limit(client_ip)
     if lock_until > now_ts:
         remaining = int(lock_until - now_ts)
         return web.json_response(
@@ -209,23 +233,28 @@ async def api_login(request: web.Request) -> web.Response:
     password = data.get("password", "")
     web_pwd = _get_web_password()
 
-    if web_pwd and password == web_pwd:
-        _state.login_ratelimit.pop(client_ip, None)
+    # 使用常量时间比较防止时序攻击
+    if web_pwd and hmac.compare_digest(password, web_pwd):
+        await clear_login_rate_limit(client_ip)
         token = _make_token(password)
         resp = web.json_response({"ok": True, "token": token})
         resp.set_cookie(
             "auth_token", token,
             max_age=TOKEN_TTL,
             httponly=True,
+            secure=True,
             samesite="Strict",
             path="/",
         )
         return resp
 
-    # 记录失败
+    # 记录失败（持久化到数据库）
     attempts += 1
-    lock_until = now_ts + _LOGIN_LOCKOUT_SECONDS if attempts >= _LOGIN_MAX_ATTEMPTS else 0
-    _state.login_ratelimit[client_ip] = (attempts, lock_until)
+    lock_until_dt = None
+    if attempts >= _LOGIN_MAX_ATTEMPTS:
+        from datetime import datetime, timezone, timedelta
+        lock_until_dt = datetime.now(timezone.utc) + timedelta(seconds=_LOGIN_LOCKOUT_SECONDS)
+    await update_login_rate_limit(client_ip, attempts, lock_until_dt)
     logger.warning("登录失败 (IP: %s, 第 %d 次)", client_ip, attempts)
     return web.json_response({"error": "wrong password"}, status=403)
 
@@ -268,11 +297,9 @@ async def api_users_list(request: web.Request) -> web.Response:
     return web.json_response(items)
 
 
-import re as _re
-
-STEAM_URL_RE = _re.compile(r"steamcommunity\.com/profiles/(\d{17})")
-STEAM_VANITY_RE = _re.compile(r"steamcommunity\.com/id/([^/]+)")
-STEAMDT_URL_RE = _re.compile(r"steamdt\.com/inventory/([a-f0-9]{32})", _re.I)
+STEAM_URL_RE = re.compile(r"steamcommunity\.com/profiles/(\d{17})")
+STEAM_VANITY_RE = re.compile(r"steamcommunity\.com/id/([^/]+)")
+STEAMDT_URL_RE = re.compile(r"steamdt\.com/inventory/([a-f0-9]{32})", re.I)
 
 
 def _extract_steam_id(raw: str) -> str | None:
@@ -289,7 +316,7 @@ def _extract_steam_id(raw: str) -> str | None:
         return None
 
     # 纯数字 17 位，且以 7656119 开头（Steam64 ID 规范）
-    if _re.fullmatch(r"\d{17}", raw):
+    if re.fullmatch(r"\d{17}", raw):
         if raw.startswith("7656119"):
             return raw
         return None  # 17位数字但不是合法 Steam64 ID
@@ -304,7 +331,7 @@ def _extract_steam_id(raw: str) -> str | None:
         return None  # 需要 Steam API 解析，暂不支持
 
     # 数字 ID 混在其他文本中
-    m2 = _re.search(r"(\d{17})", raw)
+    m2 = re.search(r"(\d{17})", raw)
     if m2:
         return m2.group(1)
 
@@ -330,7 +357,7 @@ async def api_user_add(request: web.Request) -> web.Response:
                     nickname = f"SteamDT:{dt_match.group(1)[:8]}"
 
     if not steam_id:
-        if _re.fullmatch(r"\d{17}", raw_input):
+        if re.fullmatch(r"\d{17}", raw_input):
             return web.json_response({"error": f"无效的 Steam ID: {raw_input}（需以 7656119 开头）"}, status=400)
         return web.json_response({"error": f"无法识别: {raw_input}", "hint": "支持: 17位数字ID / steamcommunity.com/profiles/xxx"}, status=400)
 
@@ -525,7 +552,7 @@ async def api_inventory(request: web.Request) -> web.Response:
 
 async def api_changes(request: web.Request) -> web.Response:
     steam_id = request.match_info["steam_id"]
-    limit = int(request.query.get("limit", "500"))
+    limit = min(int(request.query.get("limit", "500")), 5000)  # 上限 5000
     changes = await get_recent_changes(steam_id, limit=limit)
     from src.crawler.localize import translate_name
     for c in changes:
@@ -656,7 +683,10 @@ async def api_monitor_stop(request: web.Request) -> web.Response:
     if _state.monitor_task and not _state.monitor_task.done():
         _state.monitor_task.cancel()
         _state.monitor_running = False
-        _state.heartbeat_event.set()  # 唤醒可能正在 sleep 的 worker
+        _state.heartbeat_event.set()  # 唤醒统一间隔模式的 worker
+        # 唤醒分层调度模式的所有 tier worker
+        for event in _state.tier_events.values():
+            event.set()
         return web.json_response({"ok": True, "msg": "stopped"})
     return web.json_response({"ok": True, "msg": "not running"})
 
@@ -807,8 +837,10 @@ async def _monitor_loop() -> None:
     """
     _state.monitor_running = True
     _state.last_heartbeat = 0.0
-    # 重置 heartbeat_event 为待触发状态（用于快速响应 Stop）
+    # 重置所有 event 为待触发状态（用于快速响应 Stop）
     _state.heartbeat_event.clear()
+    for event in _state.tier_events.values():
+        event.clear()
     logger.info("Web 触发的监控循环已启动 (tiered=%s) — 7x24 持续运行，仅手动停止", settings.tiered_scheduling_enabled)
 
     try:
@@ -862,6 +894,7 @@ async def _run_tiered_loop() -> None:
 
     async def _tier_worker(tier: str, interval_minutes: int) -> None:
         """单个层级的监控 worker。持续运行直到手动 Stop，不再因心跳超时自动停止。"""
+        tier_event = _state.tier_events[tier]  # 每个层级独立的 Event
         logger.info("层级 [%s] worker 已启动 (间隔 %d 分钟) — 7x24 运行", tier, interval_minutes)
         while _state.monitor_running:
             try:
@@ -883,14 +916,14 @@ async def _run_tiered_loop() -> None:
             except Exception as e:
                 logger.exception("层级 [%s] worker 异常: %s", tier, e)
 
-            # 等待下一轮（可通过 heartbeat_event 提前唤醒以响应 Stop）
+            # 等待下一轮（可通过独立 event 提前唤醒以响应 Stop）
             if not _state.monitor_running:
                 break
             try:
-                await asyncio.wait_for(_state.heartbeat_event.wait(), timeout=interval_minutes * 60)
+                await asyncio.wait_for(tier_event.wait(), timeout=interval_minutes * 60)
             except asyncio.TimeoutError:
                 pass
-            _state.heartbeat_event.clear()
+            tier_event.clear()
 
         logger.info("层级 [%s] worker 已停止", tier)
 
@@ -910,6 +943,9 @@ async def _run_tiered_loop() -> None:
             await asyncio.gather(*tasks, return_exceptions=True)
     finally:
         _state.monitor_running = False
+        # 唤醒所有层级 worker 的独立 event，并取消任务
+        for tier, event in _state.tier_events.items():
+            event.set()
         for tier, task in list(_state.tier_tasks.items()):
             if task and not task.done():
                 task.cancel()
@@ -1047,11 +1083,15 @@ async def api_export_download(request: web.Request) -> web.Response:
     if not filename:
         return web.json_response({"error": "missing file param"}, status=400)
 
-    filepath = SAVES_DIR / filename
+    # 规范化路径并校验是否在允许目录内（防止路径穿越）
+    filepath = (SAVES_DIR / filename).resolve()
+    if not filepath.is_relative_to(SAVES_DIR.resolve()):
+        return web.json_response({"error": "forbidden"}, status=403)
+
     if not filepath.exists() or not filepath.is_file():
         return web.json_response({"error": "文件不存在"}, status=404)
 
-    if not filepath.name.endswith(".cs2mon") or ".." in filename:
+    if not filepath.name.endswith(".cs2mon"):
         return web.json_response({"error": "forbidden"}, status=403)
 
     return web.FileResponse(
@@ -1099,7 +1139,10 @@ async def api_import(request: web.Request) -> web.Response:
 # ---------------------------------------------------------------------------
 
 async def api_test_connection(request: web.Request) -> web.Response:
-    """测试 Steam 库存 API 连通性。可指定 steam_id 否则用配置中的第一个。"""
+    """测试 Steam 库存 API 连通性。可指定 steam_id 否则用配置中的第一个。
+
+    仅返回状态、耗时、成功与否，不暴露内部 URL 和代理配置。
+    """
     import time as _time
     from src.crawler.fetcher import _build_headers, _get_proxy_config, get_client
     steam_id = request.query.get("steam_id", settings.steam_id_list[0] if settings.steam_id_list else "")
@@ -1110,15 +1153,14 @@ async def api_test_connection(request: web.Request) -> web.Response:
     url = settings.steam_inventory_url.format(steam_id=steam_id) + "?l=english&count=5"
     if proxy_cfg.get("hosts_override"):
         url = url.replace("https://steamcommunity.com", f"https://{proxy_cfg['hosts_override']}")
-    result = {"url": url, "proxy_mode": settings.steam_proxy_mode,
-              "proxy": proxy_cfg.get("proxy") or "none", "hosts": proxy_cfg.get("hosts_override") or "none",
-              "has_cookie": bool(settings.steam_cookie), "headers_keys": list(headers.keys())}
     try:
         client = await get_client()
         t0 = _time.monotonic()
         resp = await client.get(url, headers=headers, timeout=15)
         elapsed = round(_time.monotonic() - t0, 3)
-        result.update({"status": resp.status_code, "elapsed": elapsed, "resp_len": len(resp.text)})
+        result: dict[str, Any] = {
+            "ok": False, "status": resp.status_code, "elapsed": elapsed,
+        }
         if resp.status_code == 200:
             try:
                 data = resp.json()
@@ -1128,14 +1170,14 @@ async def api_test_connection(request: web.Request) -> web.Response:
             except Exception:
                 result["ok"] = False
                 result["error"] = "JSON parse failed"
-                result["raw"] = resp.text[:200]
+        elif resp.status_code == 429:
+            result["error"] = "rate limited (429)"
+        elif resp.status_code == 403:
+            result["error"] = "forbidden (403) — inventory may be private"
         else:
-            result["ok"] = False
-            result["body"] = resp.text[:200]
+            result["error"] = f"HTTP {resp.status_code}"
     except Exception as e:
-        result["status"] = 0
-        result["ok"] = False
-        result["error"] = f"{type(e).__name__}: {e}"
+        result = {"ok": False, "status": 0, "error": f"{type(e).__name__}: {e}"}
     return web.json_response(result)
 
 
@@ -1195,6 +1237,8 @@ def create_web_app() -> web.Application:
         await init_db()
         from src.db.repository import init_default_users
         await init_default_users()
+        # 一次性初始化 Web 密码（避免运行时副作用）
+        _init_web_password()
         logger.info("Web 服务启动，数据库已初始化")
 
     app.on_startup.append(on_startup)

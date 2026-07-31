@@ -7,8 +7,6 @@ import html as _html
 import logging
 from typing import TYPE_CHECKING, Any
 
-import httpx
-
 from src.config import settings
 from src.models.item import ChangeEvent, ChangeType
 
@@ -62,30 +60,32 @@ async def _send_telegram(msg: str) -> None:
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         return
     url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.post(url, json={
-                "chat_id": settings.telegram_chat_id,
-                "text": msg,
-                "parse_mode": "HTML",
-            }, timeout=10)
-        except Exception as e:
-            logger.warning("Telegram 通知失败: %s", e)
+    from src.crawler.fetcher import get_client
+    client = await get_client()
+    try:
+        await client.post(url, json={
+            "chat_id": settings.telegram_chat_id,
+            "text": msg,
+            "parse_mode": "HTML",
+        }, timeout=10)
+    except Exception as e:
+        logger.warning("Telegram 通知失败: %s", e)
 
 
 async def _send_dingtalk(text: str) -> None:
     """通过钉钉 Webhook 发送消息。"""
     if not settings.dingtalk_webhook_url:
         return
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.post(
-                settings.dingtalk_webhook_url,
-                json={"msgtype": "text", "text": {"content": text}},
-                timeout=10,
-            )
-        except Exception as e:
-            logger.warning("钉钉通知失败: %s", e)
+    from src.crawler.fetcher import get_client
+    client = await get_client()
+    try:
+        await client.post(
+            settings.dingtalk_webhook_url,
+            json={"msgtype": "text", "text": {"content": text}},
+            timeout=10,
+        )
+    except Exception as e:
+        logger.warning("钉钉通知失败: %s", e)
 
 
 async def _send_serverchan(text: str) -> None:
@@ -93,11 +93,12 @@ async def _send_serverchan(text: str) -> None:
     if not settings.serverchan_key:
         return
     url = f"https://sctapi.ftqq.com/{settings.serverchan_key}.send"
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.post(url, json={"title": "CS2 库存变化", "content": text}, timeout=10)
-        except Exception as e:
-            logger.warning("Server酱 通知失败: %s", e)
+    from src.crawler.fetcher import get_client
+    client = await get_client()
+    try:
+        await client.post(url, json={"title": "CS2 库存变化", "content": text}, timeout=10)
+    except Exception as e:
+        logger.warning("Server酱 通知失败: %s", e)
 
 
 async def notify_user_change(

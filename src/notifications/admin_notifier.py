@@ -6,8 +6,6 @@ import asyncio
 import logging
 from typing import Any
 
-import httpx
-
 from src.config import settings
 
 logger = logging.getLogger(__name__)
@@ -17,36 +15,38 @@ async def _send_telegram(text: str) -> None:
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         return
     url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        try:
-            await client.post(url, json={
-                "chat_id": settings.telegram_chat_id,
-                "text": f"⚠️ [管理员]\n{text}",
-                "parse_mode": "HTML",
-            }, timeout=10)
-        except Exception as e:
-            logger.warning("管理员 Telegram 通知失败: %s", e)
+    from src.crawler.fetcher import get_client
+    client = await get_client()
+    try:
+        await client.post(url, json={
+            "chat_id": settings.telegram_chat_id,
+            "text": f"⚠️ [管理员]\n{text}",
+            "parse_mode": "HTML",
+        }, timeout=10)
+    except Exception as e:
+        logger.warning("管理员 Telegram 通知失败: %s", e)
 
 
 async def _send_webhook(text: str) -> None:
     if not settings.admin_webhook_url:
         return
-    async with httpx.AsyncClient() as client:
-        try:
-            if settings.admin_webhook_type == "dingtalk":
-                await client.post(
-                    settings.admin_webhook_url,
-                    json={"msgtype": "text", "text": {"content": f"⚠️ [管理员]\n{text}"}},
-                    timeout=10,
-                )
-            else:
-                await client.post(
-                    settings.admin_webhook_url,
-                    json={"text": text},
-                    timeout=10,
-                )
-        except Exception as e:
-            logger.warning("管理员 Webhook 通知失败: %s", e)
+    from src.crawler.fetcher import get_client
+    client = await get_client()
+    try:
+        if settings.admin_webhook_type == "dingtalk":
+            await client.post(
+                settings.admin_webhook_url,
+                json={"msgtype": "text", "text": {"content": f"⚠️ [管理员]\n{text}"}},
+                timeout=10,
+            )
+        else:
+            await client.post(
+                settings.admin_webhook_url,
+                json={"text": text},
+                timeout=10,
+            )
+    except Exception as e:
+        logger.warning("管理员 Webhook 通知失败: %s", e)
 
 
 async def notify_admin(

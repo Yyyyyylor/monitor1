@@ -1,0 +1,16 @@
+schema_version: 1
+module_path: ""
+title: Steam CS2 库存监控器项目根
+scope:
+    - README.md
+    - .gitignore
+    - Dockerfile
+    - docker-compose.yml
+    - pyproject.toml
+    - install.bat
+    - run_web.py
+    - start.bat
+    - .env.example
+source_files: []
+depends_on: []
+related_to: []

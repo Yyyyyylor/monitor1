@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir .
 # 复制源码 + 汉化数据
 COPY src/ src/
 COPY translate/translation_map.py translate/translation_map.py
+COPY translate/translation_map.json translate/translation_map.json
 
 # 创建数据目录
 RUN mkdir -p /app/data /app/data/logs

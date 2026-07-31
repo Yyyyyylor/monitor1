@@ -1,11 +1,15 @@
-# 个人配置（包含 API key 和 Steam ID）
+# 个人配置（包含 API key 和密码，绝不可提交）
 .env
 
-# 数据库
+# 数据库（运行时生成）
 data/
 *.db
 *.db-shm
 *.db-wal
+
+# 导出文件（运行时生成）
+saves/
+*.cs2mon
 
 # Python
 __pycache__/
@@ -13,8 +17,12 @@ __pycache__/
 *.pyo
 *.egg-info/
 dist/
+build/
 venv/
 .venv/
+
+# 测试缓存
+.pytest_cache/
 
 # 日志
 logs/
@@ -23,5 +31,5 @@ logs/
 .vscode/
 .idea/
 
-# Python 安装包（打包时保留，git 不跟踪）
+# Python 安装包（本地使用，不提交）
 python-*.exe

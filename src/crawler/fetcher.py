@@ -29,7 +29,6 @@ def _build_client_kwargs() -> dict[str, Any]:
         kwargs["proxy"] = proxy_url
     if not need_verify:
         kwargs["verify"] = False
-        warnings.filterwarnings("ignore", message=".*verify.*", category=UserWarning)
     return kwargs
 
 
@@ -37,7 +36,10 @@ async def get_client() -> httpx.AsyncClient:
     """获取共享的 httpx 客户端（单例，带连接池）。"""
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(**_build_client_kwargs())
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*verify.*", category=UserWarning)
+            _client = httpx.AsyncClient(**_build_client_kwargs())
     return _client
 
 
@@ -178,14 +180,26 @@ async def fetch_inventory_paginated(steam_id: str) -> dict[str, Any] | None:
     logger.debug("连接方式: proxy=%s, hosts=%s",
                  proxy_cfg.get("proxy"), proxy_cfg.get("hosts_override"))
 
-    client = await get_client()
+    try:
+        client = await get_client()
+    except Exception as exc:
+        logger.warning("创建 HTTP 客户端失败: %s", exc)
+        return None
+
     start_assetid: str | None = None
     more_pages = True
     page_count = 0
     total_count = 0
 
     while more_pages:
-        data = await _fetch_page(client, steam_id, proxy_cfg, start_assetid)
+        try:
+            data = await _fetch_page(client, steam_id, proxy_cfg, start_assetid)
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+            logger.warning("分页抓取异常 (已获取 %d 页): %s", page_count, exc)
+            if page_count == 0:
+                return None
+            break
+
         if data is None:
             if page_count == 0:
                 return None

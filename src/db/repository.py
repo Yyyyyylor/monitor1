@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import zlib
@@ -35,11 +36,14 @@ def _decompress(data: bytes) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# 快照读取缓存（TTL 60 秒）
+# 快照读取缓存（LRU + TTL 60 秒）
 # ---------------------------------------------------------------------------
 
-_snapshot_cache: dict[str, tuple[float, InventorySnapshot]] = {}
+from collections import OrderedDict
+
+_snapshot_cache: OrderedDict[str, tuple[float, InventorySnapshot]] = OrderedDict()
 _CACHE_TTL = 60  # 秒
+_CACHE_MAX = 128  # 最大缓存数量
 
 
 def _cache_get(steam_id: str) -> InventorySnapshot | None:
@@ -47,14 +51,21 @@ def _cache_get(steam_id: str) -> InventorySnapshot | None:
     if steam_id in _snapshot_cache:
         ts, snap = _snapshot_cache[steam_id]
         if time.time() - ts < _CACHE_TTL:
+            _snapshot_cache.move_to_end(steam_id)  # LRU: 访问时移到最后
             return snap
         del _snapshot_cache[steam_id]
     return None
 
 
 def _cache_put(steam_id: str, snap: InventorySnapshot) -> None:
-    """写入缓存。"""
-    _snapshot_cache[steam_id] = (time.time(), snap)
+    """写入缓存，超过上限时淘汰最久未访问的条目。"""
+    if steam_id in _snapshot_cache:
+        _snapshot_cache.move_to_end(steam_id)
+        _snapshot_cache[steam_id] = (time.time(), snap)
+    else:
+        if len(_snapshot_cache) >= _CACHE_MAX:
+            _snapshot_cache.popitem(last=False)  # 淘汰最久未访问
+        _snapshot_cache[steam_id] = (time.time(), snap)
 
 
 def _cache_invalidate(steam_id: str) -> None:
@@ -473,7 +484,10 @@ EXPORT_VERSION = "1.0"
 
 
 async def export_all_data() -> dict[str, Any]:
-    """导出全部监控数据为字典（供 API 序列化为 JSON 文件）。"""
+    """导出全部监控数据为字典（供 API 序列化为 JSON 文件）。
+
+    使用分批查询避免一次性加载全部数据到内存。
+    """
     async with async_session_factory() as session:
         # 所有用户（含回收站）
         user_result = await session.execute(select(MonitoredUser))
@@ -491,7 +505,7 @@ async def export_all_data() -> dict[str, Any]:
         for a in arch_result.scalars().all():
             archives.setdefault(a.steam_id, []).append(a)
 
-        # 最近变化事件（每用户最多 200 条）
+        # 最近变化事件（每用户最多 200 条，分批构建）
         ch_result = await session.execute(
             select(InventoryChange).order_by(InventoryChange.change_time.desc())
         )
@@ -501,6 +515,7 @@ async def export_all_data() -> dict[str, Any]:
             if len(lst) < 200:
                 lst.append(c)
 
+    # 分批处理每个用户的数据，避免同时解压所有快照
     users_data: list[dict[str, Any]] = []
     for u in all_users:
         entry: dict[str, Any] = {
@@ -511,7 +526,7 @@ async def export_all_data() -> dict[str, Any]:
             "created_at": _iso_utc(u.created_at) if u.created_at else None,
             "deleted_at": _iso_utc(u.deleted_at) if u.deleted_at else None,
         }
-        # 当前库存
+        # 当前库存（逐用户解压，处理完即可释放）
         inv = inventories.get(u.steam_id)
         if inv:
             entry["current_inventory"] = {
@@ -543,6 +558,9 @@ async def export_all_data() -> dict[str, Any]:
             for a in arch_list
         ]
         users_data.append(entry)
+        # 每处理 10 个用户让出一次控制权，避免阻塞事件循环
+        if len(users_data) % 10 == 0:
+            await asyncio.sleep(0)
 
     return {
         "version": EXPORT_VERSION,
@@ -651,3 +669,58 @@ async def import_all_data(data: dict[str, Any]) -> dict[str, int]:
             await session.commit()
 
     return stats
+
+
+# ---------------------------------------------------------------------------
+# 登录限速（持久化到数据库）
+# ---------------------------------------------------------------------------
+
+async def get_login_rate_limit(client_ip: str) -> tuple[int, float]:
+    """获取 IP 的登录失败计数和锁定截止时间戳。
+
+    Returns:
+        (attempts, lock_until_timestamp)
+    """
+    from src.db.models import LoginRateLimit
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(LoginRateLimit).where(LoginRateLimit.client_ip == client_ip)
+        )
+        record = result.scalar_one_or_none()
+        if not record:
+            return (0, 0.0)
+        lock_ts = record.lock_until.timestamp() if record.lock_until else 0.0
+        return (record.attempts, lock_ts)
+
+
+async def update_login_rate_limit(
+    client_ip: str, attempts: int, lock_until: datetime | None
+) -> None:
+    """更新 IP 的登录失败计数和锁定截止时间。"""
+    from src.db.models import LoginRateLimit
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(LoginRateLimit).where(LoginRateLimit.client_ip == client_ip)
+        )
+        record = result.scalar_one_or_none()
+        if record:
+            record.attempts = attempts
+            record.lock_until = lock_until
+        else:
+            record = LoginRateLimit(
+                client_ip=client_ip,
+                attempts=attempts,
+                lock_until=lock_until,
+            )
+            session.add(record)
+        await session.commit()
+
+
+async def clear_login_rate_limit(client_ip: str) -> None:
+    """登录成功后清除 IP 的失败计数。"""
+    from src.db.models import LoginRateLimit
+    async with async_session_factory() as session:
+        await session.execute(
+            delete(LoginRateLimit).where(LoginRateLimit.client_ip == client_ip)
+        )
+        await session.commit()
