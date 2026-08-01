@@ -5,12 +5,20 @@
 - [Dockerfile](file://Dockerfile)
 - [docker-compose.yml](file://docker-compose.yml)
 - [README.md](file://README.md)
+- [.gitignore](file://.gitignore)
 - [src/main.py](file://src/main.py)
 - [src/config.py](file://src/config.py)
 - [src/web/app.py](file://src/web/app.py)
 - [src/health/server.py](file://src/health/server.py)
 - [pyproject.toml](file://pyproject.toml)
 </cite>
+
+## 更新摘要
+**所做更改**
+- 更新了Dockerfile构建配置，增强了容器化功能以改进环境配置和安全性
+- 优化了.gitignore文件，增加了更全面的忽略模式以提升构建效率
+- 完善了容器化部署的环境变量管理策略
+- 增强了Docker镜像的安全性和性能优化措施
 
 ## 目录
 1. [简介](#简介)
@@ -41,6 +49,7 @@
 - Dockerfile：镜像构建定义
 - docker-compose.yml：多服务编排
 - pyproject.toml：Python依赖与打包元信息
+- .gitignore：Git忽略规则
 - README.md：项目说明
 
 ```mermaid
@@ -51,11 +60,13 @@ C --> E["健康检查服务"]
 C --> F["数据库(可选)"]
 B --> G["src/*"]
 B --> H["pyproject.toml"]
+I[".gitignore"] --> J["构建优化"]
 ```
 
 图表来源
 - [Dockerfile:1-200](file://Dockerfile#L1-L200)
 - [docker-compose.yml:1-200](file://docker-compose.yml#L1-L200)
+- [.gitignore:1-200](file://.gitignore#L1-L200)
 
 章节来源
 - [README.md:1-200](file://README.md#L1-L200)
@@ -110,8 +121,22 @@ end
   - 指定ENTRYPOINT/CMD以启动Web服务或调度器
   - 支持通过环境变量覆盖运行时配置
 
+**更新** Dockerfile已进行容器化增强，新增了多项改进以优化构建过程和运行时配置，包括更好的环境隔离和安全加固。
+
 章节来源
 - [Dockerfile:1-200](file://Dockerfile#L1-L200)
+
+### .gitignore 构建优化
+- 忽略Python缓存文件（__pycache__、*.pyc）
+- 忽略虚拟环境和依赖目录（venv、.venv、node_modules）
+- 忽略IDE配置文件和临时文件
+- 忽略构建产物和日志文件
+- 忽略敏感配置文件和环境变量文件
+
+**更新** .gitignore文件已增加更全面的忽略模式，优化了构建过程中的文件忽略策略，提升了构建效率和安全性。
+
+章节来源
+- [.gitignore:1-200](file://.gitignore#L1-L200)
 
 ### docker-compose.yml 编排详解
 - 服务定义：
@@ -242,6 +267,9 @@ Web --> DB["数据库"]
 - 网络优化：
   - 使用专用网络减少广播风暴
   - 合理设置超时与重试
+- 构建优化：
+  - 利用Docker缓存机制加速构建
+  - 使用.dockerignore排除不必要文件
 
 [本节为通用指导，不直接分析具体文件]
 
@@ -259,13 +287,16 @@ Web --> DB["数据库"]
 - 回滚策略：
   - 保留历史镜像版本
   - 快速切换至稳定版本
+- 构建问题：
+  - 检查Dockerfile语法和依赖安装
+  - 验证.gitignore配置是否正确
 
 章节来源
 - [docker-compose.yml:1-200](file://docker-compose.yml#L1-L200)
 - [src/health/server.py:1-200](file://src/health/server.py#L1-L200)
 
 ## 结论
-通过合理的Dockerfile分层与docker-compose编排，可实现安全、高效、可维护的监控系统集成部署。配合环境变量、日志与监控策略，可在生产环境中获得稳定的运行体验。
+通过合理的Dockerfile分层与docker-compose编排，可实现安全、高效、可维护的监控系统集成部署。配合环境变量、日志与监控策略，可在生产环境中获得稳定的运行体验。最新的Dockerfile容器化增强和.gitignore优化进一步提升了构建效率和安全性。
 
 [本节为总结性内容，不直接分析具体文件]
 
@@ -275,6 +306,11 @@ Web --> DB["数据库"]
   - 启动服务：使用compose命令拉起全部服务
   - 查看日志：按服务过滤查看实时日志
   - 健康检查：访问健康端点验证服务状态
+- 常用命令：
+  - `docker build -t monitor-app .`
+  - `docker-compose up -d`
+  - `docker-compose logs -f`
+  - `docker-compose down`
 
 章节来源
 - [Dockerfile:1-200](file://Dockerfile#L1-L200)

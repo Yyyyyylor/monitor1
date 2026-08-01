@@ -1,0 +1,19 @@
+schema_version: 1
+module_path: src
+title: Steam CS2 库存监控器应用入口与配置
+scope:
+    - src/crawler/
+    - src/db/
+    - src/detector/
+    - src/health/
+    - src/models/
+    - src/notifications/
+    - src/scheduler/
+    - src/web/
+    - src/config.py
+    - src/main.py
+    - src/utils.py
+source_files: []
+depends_on: []
+related_to:
+    - path: tests

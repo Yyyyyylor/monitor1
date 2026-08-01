@@ -3,7 +3,7 @@ schema_version: 1
 locale: zh-CN
 branch: main
 nodes_managed: true
-exported_at: "2026-07-31T07:07:37Z"
+exported_at: "2026-07-31T12:01:05Z"
 modules:
     "":
         dir_name: Steam CS2 库存监控器项目根
@@ -21,6 +21,7 @@ modules:
         source_files: []
         children:
             - core_runtime
+            - src
             - tests
         depends_on: []
         related_to: []
@@ -30,6 +31,25 @@ modules:
         scope:
             - src/main.py
             - src/config.py
+            - src/utils.py
+        source_files: []
+        children: []
+        depends_on: []
+        related_to: []
+    src:
+        dir_name: Steam CS2 库存监控器应用入口与配置
+        title: Steam CS2 库存监控器应用入口与配置
+        scope:
+            - src/crawler/
+            - src/db/
+            - src/detector/
+            - src/health/
+            - src/models/
+            - src/notifications/
+            - src/scheduler/
+            - src/web/
+            - src/config.py
+            - src/main.py
             - src/utils.py
         source_files: []
         children: []
@@ -45,4 +65,4 @@ modules:
         children: []
         depends_on: []
         related_to:
-            - path: core_runtime
+            - path: src
