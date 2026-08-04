@@ -35,6 +35,14 @@ def _decompress(data: bytes) -> Any:
     return json.loads(zlib.decompress(data).decode("utf-8"))
 
 
+def _serialize_items(items: dict[str, Item]) -> dict[str, Any]:
+    """按 asset_id 排序序列化物品，保证相同库存内容产出字节一致。
+
+    这样在内容未变化时可安全跳过全量快照写盘（见 save_snapshot_and_changes）。
+    """
+    return {aid: items[aid].to_dict() for aid in sorted(items)}
+
+
 # ---------------------------------------------------------------------------
 # 快照读取缓存（LRU + TTL 60 秒）
 # ---------------------------------------------------------------------------
@@ -193,7 +201,7 @@ async def reset_failure_count(steam_id: str) -> None:
 
 async def save_current_snapshot(snapshot: InventorySnapshot) -> None:
     """保存当前库存基准快照（全量替换），并使缓存失效。"""
-    items_data = {aid: item.to_dict() for aid, item in snapshot.items.items()}
+    items_data = _serialize_items(snapshot.items)
     compressed = _compress(items_data)
     async with async_session_factory() as session:
         result = await session.execute(
@@ -292,7 +300,7 @@ async def save_snapshot_and_changes(
 
     保证两者要么同时成功，要么同时回滚，不会出现快照已更新但事件丢失。
     """
-    items_data = {aid: item.to_dict() for aid, item in snapshot.items.items()}
+    items_data = _serialize_items(snapshot.items)
     compressed = _compress(items_data)
 
     async with async_session_factory() as session:
@@ -304,6 +312,14 @@ async def save_snapshot_and_changes(
         )
         record = result.scalar_one_or_none()
         if record:
+            if not events and record.snapshot_data == compressed:
+                # P2 优化：库存内容未变化且无事件时，跳过全量快照压缩写盘，仅刷新元数据。
+                record.updated_at = datetime.now(timezone.utc)
+                record.item_count = snapshot.item_count
+                record.api_total_count = snapshot.api_total_count
+                await session.commit()
+                _cache_invalidate(snapshot.steam_id)
+                return
             record.snapshot_data = compressed
             record.item_count = snapshot.item_count
             record.api_total_count = snapshot.api_total_count
@@ -382,7 +398,7 @@ async def save_daily_archive(steam_id: str, items: dict[str, Item], force: bool 
     """
     now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    items_data = {aid: item.to_dict() for aid, item in items.items()}
+    items_data = _serialize_items(items)
     async with async_session_factory() as session:
         if not force:
             result = await session.execute(

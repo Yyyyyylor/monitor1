@@ -11,15 +11,18 @@ market_hash_name 格式示例：
 
 from __future__ import annotations
 
+import logging
 import re
 from functools import lru_cache
+
+logger = logging.getLogger(__name__)
 
 # 延迟加载翻译表（避免导入时就加载大文件）
 _trans_map: dict[str, str] | None = None
 
 
 def _load_map() -> dict[str, str]:
-    """加载翻译表 — 优先 JSON，失败则回退到 importlib 动态加载 Python 模块。"""
+    """加载翻译表 — 仅从 JSON 加载，不再 exec 外部 Python 模块（避免代码执行风险）。"""
     global _trans_map
     if _trans_map is not None:
         return _trans_map
@@ -27,7 +30,6 @@ def _load_map() -> dict[str, str]:
     import json
     from pathlib import Path
 
-    # 优先：JSON 文件（加载快、可被打包工具识别）
     candidates_json = [
         Path(__file__).resolve().parent.parent.parent / "translate" / "translation_map.json",
         Path("translate") / "translation_map.json",
@@ -38,20 +40,7 @@ def _load_map() -> dict[str, str]:
                 _trans_map = json.load(f)
             return _trans_map
 
-    # 回退：Python 模块（兼容旧版）
-    import importlib.util
-    candidates_py = [
-        Path(__file__).resolve().parent.parent.parent / "translate" / "translation_map.py",
-        Path("translate") / "translation_map.py",
-    ]
-    for p in candidates_py:
-        if p.exists():
-            spec = importlib.util.spec_from_file_location("translation_map", str(p))
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                _trans_map = getattr(mod, "TRANSLATION_MAP", {})
-                return _trans_map
+    logger.warning("未找到翻译表 translation_map.json，物品名将保持英文")
     _trans_map = {}
     return _trans_map
 

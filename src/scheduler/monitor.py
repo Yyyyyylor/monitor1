@@ -271,6 +271,17 @@ async def compact_maintenance() -> None:
 # 分层状态查询（供 API 使用）
 # ---------------------------------------------------------------------------
 
+def record_tier_run(tier: str, stats: dict[str, Any]) -> str:
+    """记录某层级的最近运行时间与统计，返回运行时间。
+
+    供 Web 层调用，取代其直接改写模块级私有状态（_tier_last_run/_tier_last_stats）。
+    """
+    run_time = datetime.now(timezone.utc).isoformat()
+    _tier_last_run[tier] = run_time
+    _tier_last_stats[tier] = stats
+    return run_time
+
+
 def get_tier_status() -> dict[str, Any]:
     """返回各层级调度状态，供前端面板展示。"""
     return {

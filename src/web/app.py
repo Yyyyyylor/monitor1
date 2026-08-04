@@ -238,11 +238,15 @@ async def api_login(request: web.Request) -> web.Response:
         await clear_login_rate_limit(client_ip)
         token = _make_token(password)
         resp = web.json_response({"ok": True, "token": token})
+        # Secure 标志按请求协议条件设置：HTTPS 下启用（防窃听），
+        # 纯 HTTP（本地/内网）下关闭，否则浏览器不会回传 cookie，认证会永久失效。
+        # SameSite=Strict 持续阻止跨站请求携带该 cookie（CSRF 防护）。
+        secure_cookie = request.scheme == "https"
         resp.set_cookie(
             "auth_token", token,
             max_age=TOKEN_TTL,
             httponly=True,
-            secure=True,
+            secure=secure_cookie,
             samesite="Strict",
             path="/",
         )
@@ -454,7 +458,9 @@ async def api_user_update(request: web.Request) -> web.Response:
         if "nickname" in data:
             user.nickname = data["nickname"] or None
         if "is_active" in data:
-            user.is_active = bool(data["is_active"])
+            val = data["is_active"]
+            # 兼容 JSON 布尔与字符串（"true"/"1" 等），避免 "false" 被 bool() 误判为 True
+            user.is_active = val if isinstance(val, bool) else str(val).strip().lower() in ("true", "1", "yes", "on")
         await session.commit()
     return web.json_response({"ok": True})
 
@@ -552,7 +558,11 @@ async def api_inventory(request: web.Request) -> web.Response:
 
 async def api_changes(request: web.Request) -> web.Response:
     steam_id = request.match_info["steam_id"]
-    limit = min(int(request.query.get("limit", "500")), 5000)  # 上限 5000
+    try:
+        limit = int(request.query.get("limit", "500"))
+    except (TypeError, ValueError):
+        limit = 500
+    limit = max(1, min(limit, 5000))  # 钳制到 [1, 5000]，避免负数/0 绕过上限
     changes = await get_recent_changes(steam_id, limit=limit)
     from src.crawler.localize import translate_name
     for c in changes:
@@ -597,8 +607,11 @@ async def api_archives(request: web.Request) -> web.Response:
 async def api_compare(request: web.Request) -> web.Response:
     """对比两个历史快照，返回差异。"""
     steam_id = request.match_info["steam_id"]
-    id_a = int(request.query.get("a", "0"))
-    id_b = int(request.query.get("b", "0"))
+    try:
+        id_a = int(request.query.get("a", "0"))
+        id_b = int(request.query.get("b", "0"))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "参数 a/b 必须是整数快照 ID"}, status=400)
     if not id_a or not id_b:
         return web.json_response({"error": "需要参数 a 和 b（快照 ID）"}, status=400)
 
@@ -738,21 +751,32 @@ async def api_schedule_update(request: web.Request) -> web.Response:
     interval = data.get("snapshot_interval_hours")
     fetch_min = data.get("fetch_interval_minutes")
 
+    # 先统一校验整型，非法输入返回 400 而非 500
+    try:
+        if hour is not None:
+            hour = int(hour)
+        if interval is not None:
+            interval = int(interval)
+        if fetch_min is not None:
+            fetch_min = int(fetch_min)
+    except (TypeError, ValueError):
+        return web.json_response(
+            {"error": "snapshot_hour / snapshot_interval_hours / fetch_interval_minutes 必须为整数"},
+            status=400,
+        )
+
     changed = False
 
     if hour is not None:
-        hour = max(0, min(23, int(hour)))
-        settings.snapshot_hour = hour
+        settings.snapshot_hour = max(0, min(23, hour))
         changed = True
 
     if interval is not None:
-        interval = max(0, int(interval))
-        settings.snapshot_interval_hours = interval
+        settings.snapshot_interval_hours = max(0, interval)
         changed = True
 
     if fetch_min is not None:
-        fetch_min = max(1, int(fetch_min))
-        settings.fetch_interval_minutes = fetch_min
+        settings.fetch_interval_minutes = max(1, fetch_min)
         changed = True
 
     if changed:
@@ -890,7 +914,7 @@ async def _run_unified_loop() -> None:
 
 async def _run_tiered_loop() -> None:
     """分层调度模式：为 high/medium/low 各启动一个独立协程。"""
-    from src.scheduler.monitor import monitor_tier, _tier_last_run, _tier_last_stats
+    from src.scheduler.monitor import monitor_tier, record_tier_run
 
     async def _tier_worker(tier: str, interval_minutes: int) -> None:
         """单个层级的监控 worker。持续运行直到手动 Stop，不再因心跳超时自动停止。"""
@@ -902,14 +926,13 @@ async def _run_tiered_loop() -> None:
                     await ws_broadcast("user_done", result)
 
                 stats = await monitor_tier(tier, on_user_done=_on_user_done)
-                _tier_last_run[tier] = datetime.now(timezone.utc).isoformat()
-                _tier_last_stats[tier] = stats
+                run_time = record_tier_run(tier, stats)
                 await ws_broadcast("tier_update", {
                     "tier": tier,
-                    "time": _tier_last_run[tier],
+                    "time": run_time,
                     "stats": stats,
                 })
-                _state.last_run_time = _tier_last_run[tier]
+                _state.last_run_time = run_time
                 _state.last_run_stats = stats
             except asyncio.CancelledError:
                 break

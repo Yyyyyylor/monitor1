@@ -1,0 +1,42 @@
+# Steam CS2 inventory monitor - dependency lock (known-good set from working venv)
+# Regenerate: venv/Scripts/python -m pip freeze --exclude-editable
+# Reproduce: pip install -r requirements.lock
+# Audit: pip-audit -r requirements.lock
+
+aiohappyeyeballs==2.6.2
+aiohttp==3.14.0
+aiosignal==1.4.0
+aiosqlite==0.22.1
+annotated-types==0.7.0
+anyio==4.13.0
+APScheduler==3.11.2
+attrs==26.1.0
+certifi==2026.5.20
+colorama==0.4.6
+frozenlist==1.8.0
+greenlet==3.5.1
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.18
+iniconfig==2.3.0
+loguru==0.7.3
+multidict==6.7.1
+packaging==26.2
+pluggy==1.6.0
+propcache==0.5.2
+pydantic==2.13.4
+pydantic-settings==2.14.1
+pydantic_core==2.46.4
+Pygments==2.20.0
+pytest==9.0.3
+pytest-asyncio==1.4.0
+pytest-mock==3.15.1
+python-dotenv==1.2.2
+SQLAlchemy==2.0.50
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+tzdata==2026.2
+tzlocal==5.3.1
+win32_setctime==1.2.0
+yarl==1.24.2

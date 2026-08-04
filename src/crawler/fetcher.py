@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import warnings
 from typing import Any
 
 import httpx
@@ -29,6 +28,9 @@ def _build_client_kwargs() -> dict[str, Any]:
         kwargs["proxy"] = proxy_url
     if not need_verify:
         kwargs["verify"] = False
+        # 只有本地回环代理才会走到这里（见 proxy.py 的 _need_verify）。
+        # 不再全局压制 InsecureRequestWarning，异常关闭校验应如实暴露。
+        logger.warning("已关闭 TLS 证书校验（仅限本地回环代理场景）")
     return kwargs
 
 
@@ -36,10 +38,7 @@ async def get_client() -> httpx.AsyncClient:
     """获取共享的 httpx 客户端（单例，带连接池）。"""
     global _client
     if _client is None or _client.is_closed:
-        import warnings
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=".*verify.*", category=UserWarning)
-            _client = httpx.AsyncClient(**_build_client_kwargs())
+        _client = httpx.AsyncClient(**_build_client_kwargs())
     return _client
 
 
@@ -168,7 +167,8 @@ async def fetch_inventory_paginated(steam_id: str) -> dict[str, Any] | None:
     """分页抓取 CS2 完整库存。
 
     返回格式: {"assets": [...], "descriptions": [...], "total_items": int}
-    库存为空或私密时返回 None。
+    库存为空、私密、或**任一页抓取失败**时返回 None —— 绝不返回不完整库存，
+    以免调用方将部分数据与上一轮快照 diff 产生大量误报。
     """
     all_assets: list[dict[str, Any]] = []
     desc_map: dict[str, dict[str, Any]] = {}
@@ -196,14 +196,13 @@ async def fetch_inventory_paginated(steam_id: str) -> dict[str, Any] | None:
             data = await _fetch_page(client, steam_id, proxy_cfg, start_assetid)
         except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
             logger.warning("分页抓取异常 (已获取 %d 页): %s", page_count, exc)
-            if page_count == 0:
-                return None
-            break
+            # 任一页失败都必须整体返回 None：部分库存若被当作完整状态，
+            # 会与上一轮快照 diff 出大量虚假的 REMOVED 事件并触发告警。
+            return None
 
         if data is None:
-            if page_count == 0:
-                return None
-            break
+            # 同上：任何一页拿不到完整数据都整体失败，绝不返回不完整库存。
+            return None
 
         assets = data.get("assets", [])
         descriptions = data.get("descriptions", [])

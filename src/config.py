@@ -57,7 +57,10 @@ class Settings(BaseSettings):
     consecutive_fail_threshold: int = 3
 
     # 健康检查
-    health_server_host: str = "0.0.0.0"
+    # 默认仅监听本机回环，避免把 Web 看板与健康接口暴露到局域网/公网。
+    # 需从其他设备访问时改为 0.0.0.0（Docker 容器内必须为 0.0.0.0 才能端口映射），
+    # 并建议前置反向代理提供 HTTPS。
+    health_server_host: str = "127.0.0.1"
     health_server_port: int = 8080
 
     # Web 访问密码

@@ -22,7 +22,7 @@ async def main() -> None:
     logger = _logger
 
     print("=" * 50)
-    logger.info("Steam CS2 库存监控器 v2.0 — Web 仪表盘")
+    logger.info("Steam CS2 库存监控器 v2.1 — Web 仪表盘")
     print("=" * 50)
 
     # 启动 Web 服务（内含数据库初始化 + APScheduler）

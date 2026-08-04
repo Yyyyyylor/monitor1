@@ -42,7 +42,7 @@ async def main() -> None:
     from loguru import logger
 
     print("=" * 50)
-    logger.info("Steam CS2 库存监控器 v2.0 启动")
+    logger.info("Steam CS2 库存监控器 v2.1 启动")
     print("=" * 50)
 
     await _init_application()

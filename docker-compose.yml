@@ -5,6 +5,10 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # 容器内必须监听 0.0.0.0，宿主机的端口映射才能生效
+      # （应用默认配置已改为安全的 127.0.0.1）
+      - HEALTH_SERVER_HOST=0.0.0.0
     ports:
       - "8080:8080"
     volumes:

@@ -1,4 +1,4 @@
-# Steam CS2 库存监控器 v2.0
+# Steam CS2 库存监控器 v2.1
 
 监控 Steam CS2 库存变化，支持存储单元活动检测、历史归档、Web 仪表盘。
 
@@ -40,7 +40,7 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 - 📜 变化事件记录（added/removed/modified/swapped）
 - 📅 每日归档快照（保留 90 天）
 - 📢 双通道通知（用户通知 + 管理员告警）
-- 🖥️ 关闭网页自动停止监控（心跳机制）
+- 🖥️ Web 启动后 7×24 持续监控，可随时手动停止
 
 ---
 
@@ -64,7 +64,9 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 │       ├── app.py        # API 路由
 │       └── static/
 │           └── index.html
-├── tests/                # 测试（34 个用例）
+├── tests/                # 测试（59 个用例）
+├── requirements.lock     # 依赖锁定（可复现安装）
+├── CHANGELOG.md          # 更新日志
 ├── .env.example          # 配置模板
 ├── Dockerfile
 └── docker-compose.yml
@@ -89,3 +91,18 @@ docker compose up -d
 pip install -e ".[dev]"
 pytest
 ```
+
+## 依赖锁定
+
+`requirements.lock` 记录了当前工作环境验证过的精确依赖版本（含传递依赖），用于可复现安装与依赖漏洞审计：
+
+```bash
+# 按锁定版本复现安装
+pip install -r requirements.lock
+
+# 依赖漏洞扫描
+pip install pip-audit
+pip-audit -r requirements.lock
+```
+
+> 新环境首次部署仍建议 `pip install -e .`；需要更新锁定时执行 `venv/Scripts/python -m pip freeze --exclude-editable > requirements.lock`。

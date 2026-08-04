@@ -1,5 +1,6 @@
 """数据库引擎与会话管理。"""
 
+import logging
 from collections.abc import AsyncGenerator
 
 from sqlalchemy import event, text
@@ -7,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase
 
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 _is_sqlite = "sqlite" in settings.database_url
 
@@ -57,8 +60,18 @@ async def init_db() -> None:
         try:
             async with engine.begin() as conn:
                 await conn.execute(text(sql_text))
-        except Exception:
-            pass  # 列已存在则忽略
+        except Exception as exc:
+            # 幂等迁移：列已存在属预期，仅记录调试信息；
+            # 其余错误（表缺失/语法/锁库）要告警暴露，便于定位 schema 问题。
+            if _is_duplicate_column_error(exc):
+                logger.debug("迁移跳过（列已存在）: %s", sql_text)
+            else:
+                logger.warning("数据库迁移失败（需人工检查）: %s — %s", sql_text, exc)
+
+
+def _is_duplicate_column_error(exc: Exception) -> bool:
+    """判断是否为 SQLite 'duplicate column name' 错误（幂等迁移的预期情形）。"""
+    return "duplicate column" in str(exc).lower()
 
 
 async def close_db() -> None:

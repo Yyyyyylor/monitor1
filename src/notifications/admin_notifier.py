@@ -7,6 +7,7 @@ import logging
 from typing import Any
 
 from src.config import settings
+from src.notifications._http import post_json_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -17,14 +18,11 @@ async def _send_telegram(text: str) -> None:
     url = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendMessage"
     from src.crawler.fetcher import get_client
     client = await get_client()
-    try:
-        await client.post(url, json={
-            "chat_id": settings.telegram_chat_id,
-            "text": f"⚠️ [管理员]\n{text}",
-            "parse_mode": "HTML",
-        }, timeout=10)
-    except Exception as e:
-        logger.warning("管理员 Telegram 通知失败: %s", e)
+    await post_json_with_retry(
+        client, url,
+        {"chat_id": settings.telegram_chat_id, "text": f"⚠️ [管理员]\n{text}", "parse_mode": "HTML"},
+        label="管理员 Telegram",
+    )
 
 
 async def _send_webhook(text: str) -> None:
@@ -32,21 +30,13 @@ async def _send_webhook(text: str) -> None:
         return
     from src.crawler.fetcher import get_client
     client = await get_client()
-    try:
-        if settings.admin_webhook_type == "dingtalk":
-            await client.post(
-                settings.admin_webhook_url,
-                json={"msgtype": "text", "text": {"content": f"⚠️ [管理员]\n{text}"}},
-                timeout=10,
-            )
-        else:
-            await client.post(
-                settings.admin_webhook_url,
-                json={"text": text},
-                timeout=10,
-            )
-    except Exception as e:
-        logger.warning("管理员 Webhook 通知失败: %s", e)
+    if settings.admin_webhook_type == "dingtalk":
+        payload = {"msgtype": "text", "text": {"content": f"⚠️ [管理员]\n{text}"}}
+    else:
+        payload = {"text": text}
+    await post_json_with_retry(
+        client, settings.admin_webhook_url, payload, label="管理员 Webhook",
+    )
 
 
 async def notify_admin(

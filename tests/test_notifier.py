@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import httpx
+
 from src.models.item import ChangeEvent, ChangeType
+from src.notifications._http import post_json_with_retry
 from src.notifications.user_notifier import _extract_item_name, _format_change_message
 
 
@@ -78,3 +81,42 @@ class TestFormatMessage:
         assert "Glock | Fade" in msg
         assert "old1" in msg
         assert "new1" in msg
+
+
+class _FailOnceClient:
+    """前 N 次失败，之后成功的假客户端。"""
+
+    def __init__(self, fail_count: int):
+        self.fail_count = fail_count
+        self.attempts = 0
+
+    async def post(self, url, json=None, timeout=10):
+        self.attempts += 1
+        if self.attempts <= self.fail_count:
+            raise httpx.TransportError("boom")
+        return "ok"
+
+
+class _AlwaysFailClient:
+    def __init__(self):
+        self.attempts = 0
+
+    async def post(self, url, json=None, timeout=10):
+        self.attempts += 1
+        raise httpx.TransportError("boom")
+
+
+class TestPostJsonWithRetry:
+    async def test_retries_then_succeeds(self, mocker) -> None:
+        mocker.patch("src.notifications._http.asyncio.sleep", new=mocker.AsyncMock())
+        client = _FailOnceClient(fail_count=2)  # 1 次成功 + 2 次失败 = 3 次尝试
+        await post_json_with_retry(client, "http://example.com/x", {"a": 1}, label="测试")
+        assert client.attempts == 3
+
+    async def test_gives_up_without_raising(self, mocker) -> None:
+        mocker.patch("src.notifications._http.asyncio.sleep", new=mocker.AsyncMock())
+        client = _AlwaysFailClient()
+        # 重试耗尽后仅记日志，不应抛异常；共尝试 1 次 + 2 次重试
+        await post_json_with_retry(client, "http://example.com/x", {}, label="测试")
+        assert client.attempts == 3
+

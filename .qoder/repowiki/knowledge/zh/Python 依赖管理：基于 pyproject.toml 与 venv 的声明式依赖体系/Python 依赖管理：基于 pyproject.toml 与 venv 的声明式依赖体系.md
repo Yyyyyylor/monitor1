@@ -21,7 +21,7 @@ source_files:
    - `requires-python = ">=3.10"` 明确最低 Python 版本要求。
 
 2. **构建系统与包分发**
-   - 使用 setuptools 作为构建后端（`setuptools.build_meta`），包名 `steam-cs2-inventory-monitor`，版本 `2.0.0`。
+   - 使用 setuptools 作为构建后端（`setuptools.build_meta`），包名 `steam-cs2-inventory-monitor`，版本 `2.1.0`。
    - 源码位于 `src/` 目录，通过 `[tool.setuptools.packages.find] where = ["src"]` 自动发现。
    - 生成的 `src/steam_cs2_inventory_monitor.egg-info/requires.txt` 与 `pyproject.toml` 保持同步，供旧版 pip 兼容。
 

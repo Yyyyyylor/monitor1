@@ -231,6 +231,15 @@ let currentSteamId = null, editingSteamId = null, pollTimer = null, heartbeatTim
 let currentInventory = null, activeCategory = 'all', displayMode = 'stacked';
 let authToken = localStorage.getItem('auth_token') || '';
 
+// --- HTML / 属性安全转义（防 XSS） ---
+function esc(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+// 将对象序列化为可安全嵌入 HTML 属性的 JSON：属性解析后再被 JS 读取时还原为原始值
+function jsonAttr(obj) {
+  return JSON.stringify(obj).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 // --- Wear colors ---
 const CHANGETYPE_ZH = {added:'新增', removed:'移除', modified:'修改', swapped:'交换'};
 const WEAR_COLORS = { 'Factory New': '#4b69ff', 'Minimal Wear': '#5e98d9', 'Field-Tested': '#b0a132', 'Well-Worn': '#b45309', 'Battle-Scarred': '#8847ff' };
@@ -330,7 +339,7 @@ async function loadUsers() {
     return `<div class="user-card${active}" onclick="selectUser('${u.steam_id}')">
       <div class="user-avatar">👤</div>
       <div class="user-info">
-        <div class="user-name" style="display:flex;align-items:center;gap:6px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${u.nickname||u.steam_id}</span> ${badge} ${freqBadge}</div>
+        <div class="user-name" style="display:flex;align-items:center;gap:6px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${esc(u.nickname||u.steam_id)}</span> ${badge} ${freqBadge}</div>
         <div class="user-meta"><span>📦 ${u.item_count}件</span><span>Σ ${u.api_total_count}</span></div>
       </div></div>`;
   }).join('');
@@ -371,7 +380,7 @@ async function loadInventory(sid) {
   // Category tabs
   html += `<div class="cat-tabs"><div class="cat-tab active" onclick="filterCat('all',this)">全部 <span class="cnt">(${inv.items.length})</span></div>`;
   catEntries.forEach(([cat, items]) => {
-    html += `<div class="cat-tab" onclick="filterCat('${cat}',this)">${cat} <span class="cnt">(${items.length})</span></div>`;
+    html += `<div class="cat-tab" data-cat="${esc(cat)}" onclick="filterCat(this.dataset.cat,this)">${esc(cat)} <span class="cnt">(${items.length})</span></div>`;
   });
   html += `</div>`;
 
@@ -394,7 +403,8 @@ async function loadInventory(sid) {
     changes.map((c, i) => {
       const hidden = i >= CHANGE_LIMIT ? ' style="display:none"' : '';
       const cls = i >= CHANGE_LIMIT ? 'change-item change-extra' : 'change-item';
-      return `<div class="${cls}"${hidden}><span class="change-badge ${c.change_type}">${CHANGETYPE_ZH[c.change_type]||c.change_type}</span><span class="change-detail">${c.name_zh||c.detail?.market_hash_name||c.detail?.item?.market_hash_name||c.detail?.current_state?.market_hash_name||'?'}</span><span class="change-time">${c.change_time?new Date(c.change_time).toLocaleString():''}</span></div>`;
+      const changeName = c.name_zh||c.detail?.market_hash_name||c.detail?.item?.market_hash_name||c.detail?.current_state?.market_hash_name||'?';
+      return `<div class="${cls}"${hidden}><span class="change-badge ${c.change_type}">${CHANGETYPE_ZH[c.change_type]||c.change_type}</span><span class="change-detail">${esc(changeName)}</span><span class="change-time">${c.change_time?new Date(c.change_time).toLocaleString():''}</span></div>`;
     }).join('');
   const expandBtn = changes.length > CHANGE_LIMIT
     ? `<div id="changeExpand" style="text-align:center;padding:12px 0"><button class="btn btn-sm btn-ghost" onclick="toggleChanges()">展开全部 (${changes.length} 条)</button></div>`
@@ -463,16 +473,16 @@ function renderItemCard(item, count) {
   const wearVal = item.attributes?.paint_wear;
   const wearStr = wearVal ? wearVal.toFixed(4) : wearName;
   const displayName = item.name_zh || item.market_hash_name;
-  return `<div class="item-card" onclick='showDetail(${JSON.stringify(item).replace(/'/g,"&#39;")})'>
+  return `<div class="item-card" onclick='showDetail(${jsonAttr(item)})'>
     <div class="item-wear-bar" style="background:${wearColor}"></div>
     ${isST?'<div class="item-st-badge">ST</div>':''}
     ${count>1?`<div class="item-count-badge">×${count}</div>`:''}
-    <div class="item-img-box"><img src="${imgUrl(item.icon_url)}" alt="" loading="lazy"></div>
+    <div class="item-img-box"><img src="${esc(imgUrl(item.icon_url))}" alt="" loading="lazy"></div>
     <div class="item-info">
-      <div class="item-name" title="${item.market_hash_name}">${displayName}</div>
+      <div class="item-name" title="${esc(item.market_hash_name)}">${esc(displayName)}</div>
       <div class="item-bottom">
-        <span class="item-wear-text">${wearStr}</span>
-        <span class="item-rarity" style="background:${rarityColor}22;color:${rarityColor}">${rarityName}</span>
+        <span class="item-wear-text">${esc(wearStr)}</span>
+        <span class="item-rarity" style="background:${rarityColor}22;color:${rarityColor}">${esc(rarityName)}</span>
       </div>
     </div></div>`;
 }
@@ -536,30 +546,31 @@ function renderStackedCard(representative, groupItems) {
     const max = Math.max(...wears).toFixed(4);
     wearStr = wears.length === 1 ? min : `${min} ~ ${max}`;
   }
-  // Escape JSON for onclick
-  const safeJson = JSON.stringify(groupItems.map(i=>i.asset_id)).replace(/'/g,"&#39;");
-  const safeName = (representative.market_hash_name||'').replace(/'/g,"&#39;");
+  // 安全嵌入：asset_id 列表序列化为可安全放进属性内的 JSON（见 jsonAttr），
+  // 名称不再嵌入 onclick，改由 showStackedDetail 从库存中反查，消除名称注入面。
+  const safeJson = jsonAttr(groupItems.map(i=>i.asset_id));
   const displayName = representative.name_zh || representative.market_hash_name;
-  return `<div class="item-card" onclick="showStackedDetail('${safeName}',${safeJson})">
+  return `<div class="item-card" onclick="showStackedDetail(${safeJson})">
     <div class="item-wear-bar" style="background:${wearColor}"></div>
     ${isST?'<div class="item-st-badge">ST</div>':''}
     ${count>1?`<div class="item-count-badge">×${count}</div>`:''}
-    <div class="item-img-box"><img src="${imgUrl(representative.icon_url)}" alt="" loading="lazy"></div>
+    <div class="item-img-box"><img src="${esc(imgUrl(representative.icon_url))}" alt="" loading="lazy"></div>
     <div class="item-info">
-      <div class="item-name" title="${representative.market_hash_name}">${displayName}</div>
+      <div class="item-name" title="${esc(representative.market_hash_name)}">${esc(displayName)}</div>
       <div class="item-bottom">
-        <span class="item-wear-text">${wearStr}</span>
-        <span class="item-rarity" style="background:${rarityColor}22;color:${rarityColor}">${rarityName}</span>
+        <span class="item-wear-text">${esc(wearStr)}</span>
+        <span class="item-rarity" style="background:${rarityColor}22;color:${rarityColor}">${esc(rarityName)}</span>
       </div>
     </div></div>`;
 }
 
 // --- Stacked detail: show all individual items ---
-function showStackedDetail(name, assetIds) {
+function showStackedDetail(assetIds) {
   if (!currentInventory) return;
   const items = assetIds.map(id => currentInventory.items.find(i => i.asset_id === id)).filter(Boolean);
   if (!items.length) return;
   const rep = items[0];
+  const name = rep.market_hash_name || '';
   const rarityColor = getRarityColor(rep.rarity);
   const marketUrl = `https://steamcommunity.com/market/listings/730/${encodeURIComponent(name)}`;
 
@@ -567,25 +578,25 @@ function showStackedDetail(name, assetIds) {
     const w = item.attributes?.paint_wear;
     const s = item.attributes?.paint_seed;
     const stickers = (item.attributes?.stickers||[]);
-    const stickerStr = stickers.length ? ` · 印花: ${stickers.map(s=>s.name).join(', ')}` : '';
+    const stickerStr = stickers.length ? ` · 印花: ${stickers.map(x=>esc(x.name)).join(', ')}` : '';
     return `<div style="padding:8px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
       <div>
         <span style="color:var(--text3);font-size:11px">#${idx+1}</span>
         <span style="font-size:13px;margin-left:6px">${w?w.toFixed(6):'—'}</span>
         ${s?`<span style="font-size:11px;color:var(--text3);margin-left:8px">种子:${s}</span>`:''}
       </div>
-      <div style="font-size:11px;color:var(--text3);max-width:50%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${stickerStr}">${stickerStr}</div>
+      <div style="font-size:11px;color:var(--text3);max-width:50%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(stickerStr)}">${esc(stickerStr)}</div>
     </div>`;
   }).join('');
 
   document.getElementById('detailContent').innerHTML = `
     <div class="modal-detail-header">
-      <div class="modal-detail-img"><img src="${imgUrl(rep.icon_url)}" alt=""></div>
+      <div class="modal-detail-img"><img src="${esc(imgUrl(rep.icon_url))}" alt=""></div>
       <div class="modal-detail-title">
-        <h2 style="color:${rarityColor}">${name}</h2>
+        <h2 style="color:${rarityColor}">${esc(name)}</h2>
         <div class="meta-row">数量: <strong>${items.length}</strong> 件</div>
-        <div class="meta-row">品质: <span style="color:${rarityColor}">${rep.rarity||'—'}</span></div>
-        <div class="meta-row">类型: ${rep.type_line||'—'}</div>
+        <div class="meta-row">品质: <span style="color:${rarityColor}">${esc(rep.rarity||'—')}</span></div>
+        <div class="meta-row">类型: ${esc(rep.type_line||'—')}</div>
       </div>
       <button class="close-btn" onclick="document.getElementById('detailModal').style.display='none'">×</button>
     </div>
@@ -616,20 +627,20 @@ function showDetail(item) {
   if (stickers.length) {
     stickersHtml = `<h4 style="margin:12px 0 8px;font-size:14px">印花 (${stickers.length})</h4><div class="sticker-grid">`;
     stickers.forEach(s => {
-      stickersHtml += `<div class="sticker-item">${s.name}${s.wear?` (刮损: ${s.wear.toFixed(2)})`:''}</div>`;
+      stickersHtml += `<div class="sticker-item">${esc(s.name)}${s.wear?` (刮损: ${s.wear.toFixed(2)})`:''}</div>`;
     });
     stickersHtml += '</div>';
   }
 
   document.getElementById('detailContent').innerHTML = `
     <div class="modal-detail-header">
-      <div class="modal-detail-img"><img src="${imgUrl(item.icon_url)}" alt=""></div>
+      <div class="modal-detail-img"><img src="${esc(imgUrl(item.icon_url))}" alt=""></div>
       <div class="modal-detail-title">
-        <h2 style="color:${rarityColor}">${item.name_zh || item.market_hash_name}</h2>
-        ${item.name_zh ? `<div class="meta-row" style="font-size:12px;color:var(--text3)">${item.market_hash_name}</div>` : ''}
-        <div class="meta-row">类型: ${item.type_line||'—'}</div>
-        <div class="meta-row">品质: <span style="color:${rarityColor}">${rarityName}</span></div>
-        <div class="meta-row">外观: <span style="color:${wearColor}">${wearName}</span></div>
+        <h2 style="color:${rarityColor}">${esc(item.name_zh || item.market_hash_name)}</h2>
+        ${item.name_zh ? `<div class="meta-row" style="font-size:12px;color:var(--text3)">${esc(item.market_hash_name)}</div>` : ''}
+        <div class="meta-row">类型: ${esc(item.type_line||'—')}</div>
+        <div class="meta-row">品质: <span style="color:${rarityColor}">${esc(rarityName)}</span></div>
+        <div class="meta-row">外观: <span style="color:${wearColor}">${esc(wearName)}</span></div>
         ${wearVal?`<div class="meta-row">磨损: ${wearVal.toFixed(6)}</div>`:''}
         ${seed?`<div class="meta-row">图案种子: ${seed}</div>`:''}
         ${phase?`<div class="meta-row">阶段: ${phase}</div>`:''}
@@ -845,7 +856,7 @@ async function showManagePanel() {
       ? (u.consecutive_fails > 0 ? `<span class="badge badge-fail" style="font-size:11px;padding:2px 6px">失败×${u.consecutive_fails}</span>`
         : (u.item_count > 0 ? `<span class="badge badge-ok" style="font-size:11px;padding:2px 6px">正常</span>` : `<span class="badge" style="background:rgba(253,203,110,0.15);color:var(--orange);font-size:11px;padding:2px 6px">待抓取</span>`))
       : '<span class="badge badge-off" style="font-size:11px;padding:2px 6px">已停用</span>';
-    const failHint = u.last_error_msg ? `<div style="font-size:11px;color:var(--red);margin-top:2px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${u.last_error_msg}">${u.last_error_msg}</div>` : '';
+    const failHint = u.last_error_msg ? `<div style="font-size:11px;color:var(--red);margin-top:2px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(u.last_error_msg)}">${esc(u.last_error_msg)}</div>` : '';
     const freq = u.monitor_frequency || 'medium';
     const freqLabels = {high: '⚡', medium: '🕐', low: '💤'};
     const freqTitles = {high: '高频 5min', medium: '中频 10min', low: '低频 20min'};
@@ -855,7 +866,7 @@ async function showManagePanel() {
       <option value="low" ${freq==='low'?'selected':''}>💤 低</option>
     </select>`;
     html += `<tr>
-      <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>${u.nickname||'—'}</strong>${failHint}</td>
+      <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>${esc(u.nickname||'—')}</strong>${failHint}</td>
       <td style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${u.steam_id}">${u.steam_id}</td>
       <td>${statusBadge}</td>
       <td style="font-size:12px">${u.item_count} / ${u.api_total_count}</td>
@@ -885,7 +896,7 @@ async function showManagePanel() {
           <tbody>`;
     for (const u of trash) {
       html += `<tr>
-        <td><strong>${u.nickname||'—'}</strong></td>
+        <td><strong>${esc(u.nickname||'—')}</strong></td>
         <td style="font-size:12px;color:var(--text3)">${u.steam_id}</td>
         <td>${u.item_count} 件</td>
         <td style="font-size:12px;color:var(--text3)">${u.deleted_at?new Date(u.deleted_at).toLocaleString():'—'}</td>
@@ -954,7 +965,7 @@ async function showTrash() {
   c.innerHTML = `<div class="panel"><div class="panel-header"><h2>🗑️ 回收站</h2><span style="font-size:12px;color:var(--text3)">${trash.length} 个用户</span></div><div class="panel-body" style="padding:0">
     <table class="inv-table"><thead><tr><th>用户</th><th>Steam ID</th><th>库存</th><th>删除时间</th><th>操作</th></tr></thead><tbody>
     ${trash.map(u => `<tr>
-      <td><strong>${u.nickname||'—'}</strong></td>
+      <td><strong>${esc(u.nickname||'—')}</strong></td>
       <td style="font-size:12px;color:var(--text3)">${u.steam_id}</td>
       <td>${u.item_count} 件</td>
       <td style="font-size:12px;color:var(--text3)">${u.deleted_at ? new Date(u.deleted_at).toLocaleString() : '—'}</td>
@@ -1048,7 +1059,7 @@ async function loadArchives(sid) {
     </div>
     <div id="compareResult"></div>
     <div style="margin-top:16px">
-      ${a.map(x=>`<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div style="font-size:12px;color:var(--accent)">📅 ${x.date} · ${x.item_count}件</div><div style="font-size:13px;color:var(--text2)">${x.top_items.map(t=>t.name+'×'+t.count).join(', ')}</div></div>`).join('')}
+      ${a.map(x=>`<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div style="font-size:12px;color:var(--accent)">📅 ${x.date} · ${x.item_count}件</div><div style="font-size:13px;color:var(--text2)">${x.top_items.map(t=>esc(t.name)+'×'+t.count).join(', ')}</div></div>`).join('')}
     </div>`;
   updateSchedUI();
 }
@@ -1125,13 +1136,13 @@ async function doBatchImport() {
       html += '<table class="inv-table" style="font-size:12px"><thead><tr><th>#</th><th>输入</th><th>Steam ID</th><th>备注</th><th>结果</th></tr></thead><tbody>';
       for (const item of r.results) {
         const status = item.ok
-          ? `<span style="color:var(--green)">${item.msg||'OK'}</span>`
-          : `<span style="color:var(--red)">${item.error}</span>`;
+          ? `<span style="color:var(--green)">${esc(item.msg||'OK')}</span>`
+          : `<span style="color:var(--red)">${esc(item.error)}</span>`;
         html += `<tr>
           <td>${item.line}</td>
-          <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${item.input}">${item.input}</td>
-          <td style="font-size:11px">${item.steam_id||'—'}</td>
-          <td>${item.nickname||'—'}</td>
+          <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(item.input)}">${esc(item.input)}</td>
+          <td style="font-size:11px">${esc(item.steam_id||'—')}</td>
+          <td>${esc(item.nickname||'—')}</td>
           <td>${status}</td>
         </tr>`;
       }
@@ -1142,7 +1153,7 @@ async function doBatchImport() {
         loadUsers();
       }
     } else {
-      el.innerHTML = `<div style="color:var(--red)">${r.error}</div>`;
+      el.innerHTML = `<div style="color:var(--red)">${esc(r.error)}</div>`;
     }
   } catch(e) {
     toast('请求失败');
@@ -1158,12 +1169,12 @@ async function runCompare(sid) {
   const el = document.getElementById('compareResult');
   el.innerHTML = '<div style="text-align:center;padding:10px"><div class="spinner"></div></div>';
   const d = await api('GET', `/api/users/${sid}/compare?a=${idA}&b=${idB}`);
-  if (d.error) { el.innerHTML = '<div style="color:var(--red)">'+d.error+'</div>'; return; }
+  if (d.error) { el.innerHTML = '<div style="color:var(--red)">'+esc(d.error)+'</div>'; return; }
   if (!d.diff.length) { el.innerHTML = '<div style="color:var(--text3);text-align:center">两次快照无差异</div>'; return; }
   const fmtDate = s => s ? s.replace(/(\d{2})(\d{2})(\d{2})(\d{2})/, '$1年$2月$3日$4时') : '';
   el.innerHTML = '<div style="font-size:13px;margin-bottom:8px;color:var(--text2)">📅 '+fmtDate(d.date_a)+'（'+d.count_a+'件）→ '+fmtDate(d.date_b)+'（'+d.count_b+'件）</div>'
     +'<table class="inv-table"><thead><tr><th>物品名称</th><th>快照A数量</th><th>快照B数量</th><th>变化量</th></tr></thead><tbody>'
-    +d.diff.map(function(i){ var c=i.delta>0?'var(--green)':'var(--red)'; var label=i.delta>0?'增加':'减少'; return '<tr><td>'+i.name+'</td><td>'+i.count_a+'</td><td>'+i.count_b+'</td><td style="color:'+c+';font-weight:700">'+label+' '+Math.abs(i.delta)+'</td></tr>'; }).join('')
+    +d.diff.map(function(i){ var c=i.delta>0?'var(--green)':'var(--red)'; var label=i.delta>0?'增加':'减少'; return '<tr><td>'+esc(i.name)+'</td><td>'+i.count_a+'</td><td>'+i.count_b+'</td><td style="color:'+c+';font-weight:700">'+label+' '+Math.abs(i.delta)+'</td></tr>'; }).join('')
     +'</tbody></table>';
 }
 
