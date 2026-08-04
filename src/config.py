@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     page_size: int = 2000
     request_timeout_seconds: int = 30
     max_retries: int = 3
+    # 并发抓取用户数（Steam 对同 IP 并发敏感，默认保守取 3，建议结合实测调整）
+    fetch_concurrency: int = 3
+    # 每用户起始随机抖动上限（秒），打散请求避免对齐 Steam 限流窗口
+    fetch_jitter_seconds: float = 1.5
 
     # ---- 分层调度（Tiered Scheduling） ----
     # 设 tiered_scheduling_enabled=false 则完全沿用旧版的 fetch_interval_minutes 统一间隔

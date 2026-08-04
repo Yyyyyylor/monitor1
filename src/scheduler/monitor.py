@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
@@ -106,7 +107,14 @@ async def _do_monitor_users(
     on_user_done: OnUserDone = None,
     users: list[Any] | None = None,
 ) -> dict[str, Any]:
-    """内部实现：处理给定的用户列表。"""
+    """内部实现：处理给定的用户列表。
+
+    P4 优化：有界并发（asyncio.Semaphore）+ 每用户随机抖动。
+      并发数受 settings.fetch_concurrency 限制（Steam 对同 IP 并发敏感，
+      默认保守取 3，可结合实测调整），每用户起始加入随机延时，避免所有
+      请求对齐到 Steam 限流窗口。整轮耗时从「串行求和」降为
+      「ceil(用户数 / 并发) × 单用户耗时」。
+    """
     start_ts = time.time()
     stats: dict[str, Any] = {"success": 0, "fail": 0, "total_events": 0}
 
@@ -117,48 +125,38 @@ async def _do_monitor_users(
         logger.info("没有活跃用户需要监控")
         return stats
 
-    spacing = settings.tier_user_spacing_seconds if settings.tiered_scheduling_enabled else 1.0
+    # 并发与抖动参数（钳制到合理区间，防止配置越界）
+    concurrency = max(1, min(int(settings.fetch_concurrency), 8))
+    jitter_max = max(0.0, float(settings.fetch_jitter_seconds))
+    sem = asyncio.Semaphore(concurrency)
+    logger.info("本轮抓取: %d 个用户, 并发 %d, 抖动上限 %.1fs",
+                len(users), concurrency, jitter_max)
 
-    for i, user in enumerate(users):
-        result = {
-            "steam_id": user.steam_id,
-            "nickname": user.nickname or "",
-            "ok": False,
-            "msg": "",
-            "events": 0,
-        }
-        try:
-            event_count = await asyncio.wait_for(
-                _process_single_user(user.steam_id),
-                timeout=120.0,
-            )
-            stats["success"] += 1
-            stats["total_events"] += event_count or 0
-            result["ok"] = True
-            result["msg"] = "成功"
-            result["events"] = event_count or 0
-        except asyncio.TimeoutError:
-            logger.error("用户 %s 处理超时（120s）", user.steam_id)
-            fails = await record_failure(user.steam_id, "处理超时")
-            stats["fail"] += 1
-            result["msg"] = "超时"
-            await _check_admin_alert(user.steam_id, fails)
-        except Exception as exc:
-            logger.exception("用户 %s 处理异常: %s", user.steam_id, exc)
-            fails = await record_failure(user.steam_id, str(exc)[:500])
-            stats["fail"] += 1
-            result["msg"] = str(exc)[:100]
-            await _check_admin_alert(user.steam_id, fails)
+    results: list[dict[str, Any]] = []
 
+    async def _run_one(user: Any) -> None:
+        # 每用户随机抖动，打散请求起始时间，避免对齐 Steam 限流窗口
+        if jitter_max > 0:
+            await asyncio.sleep(random.uniform(0, jitter_max))
+        async with sem:
+            result = await _process_one_user(user)
+        results.append(result)
         if on_user_done:
             try:
                 await on_user_done(result)
             except Exception:
                 pass
 
-        # 用户间间隔（最后一个不等）
-        if i < len(users) - 1:
-            await asyncio.sleep(spacing)
+    tasks = [asyncio.create_task(_run_one(u)) for u in users]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    for result in results:
+        if result["ok"]:
+            stats["success"] += 1
+            stats["total_events"] += result["events"]
+        else:
+            stats["fail"] += 1
 
     elapsed = time.time() - start_ts
     stats["elapsed_sec"] = round(elapsed, 2)
@@ -171,6 +169,39 @@ async def _do_monitor_users(
     settings.last_fail_count = stats["fail"]
 
     return stats
+
+
+async def _process_one_user(user: Any) -> dict[str, Any]:
+    """处理单个用户，返回结果字典；内部捕获所有异常，绝不抛出。
+
+    由 _do_monitor_users 的并发 worker 调用（每个用户一个协程）。
+    """
+    result = {
+        "steam_id": user.steam_id,
+        "nickname": user.nickname or "",
+        "ok": False,
+        "msg": "",
+        "events": 0,
+    }
+    try:
+        event_count = await asyncio.wait_for(
+            _process_single_user(user.steam_id),
+            timeout=120.0,
+        )
+        result["ok"] = True
+        result["msg"] = "成功"
+        result["events"] = event_count or 0
+    except asyncio.TimeoutError:
+        logger.error("用户 %s 处理超时（120s）", user.steam_id)
+        fails = await record_failure(user.steam_id, "处理超时")
+        result["msg"] = "超时"
+        await _check_admin_alert(user.steam_id, fails)
+    except Exception as exc:
+        logger.exception("用户 %s 处理异常: %s", user.steam_id, exc)
+        fails = await record_failure(user.steam_id, str(exc)[:500])
+        result["msg"] = str(exc)[:100]
+        await _check_admin_alert(user.steam_id, fails)
+    return result
 
 
 async def _process_single_user(steam_id: str) -> int:

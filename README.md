@@ -1,4 +1,4 @@
-# Steam CS2 库存监控器 v2.1
+# Steam CS2 库存监控器 v2.2
 
 监控 Steam CS2 库存变化，支持存储单元活动检测、历史归档、Web 仪表盘。
 
@@ -35,6 +35,7 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 
 ### 监控功能
 - ⏱️ 定时爬取（默认 5 分钟）
+- ⚡ 并发抓取（默认 3 路并发 + 每用户随机抖动，避免触发 Steam 限流）
 - 📦 存储单元活动检测（基于 total_inventory_count delta）
 - 🔄 交换识别（同类型物品配对）
 - 📜 变化事件记录（added/removed/modified/swapped）

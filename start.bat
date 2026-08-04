@@ -1,5 +1,5 @@
 @echo off
-title Steam CS2 Inventory Monitor v2.1
+title Steam CS2 Inventory Monitor v2.2
 
 if not exist "venv\Scripts\python.exe" (
     echo [ERROR] Not installed. Run install.bat first.
@@ -13,7 +13,7 @@ if not exist ".env" (
 )
 
 echo.
-echo   Steam CS2 Inventory Monitor v2.1
+echo   Steam CS2 Inventory Monitor v2.2
 echo   Browser will open. Ctrl+C to stop.
 echo.
 call venv\Scripts\python run_web.py
