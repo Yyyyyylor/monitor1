@@ -68,6 +68,7 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 ├── tests/                # 测试（59 个用例）
 ├── requirements.lock     # 依赖锁定（可复现安装）
 ├── CHANGELOG.md          # 更新日志
+├── LICENSE               # MIT 许可证
 ├── .env.example          # 配置模板
 ├── Dockerfile
 └── docker-compose.yml
@@ -107,3 +108,16 @@ pip-audit -r requirements.lock
 ```
 
 > 新环境首次部署仍建议 `pip install -e .`；需要更新锁定时执行 `venv/Scripts/python -m pip freeze --exclude-editable > requirements.lock`。
+
+---
+### 鸣谢
+
+感谢 @八月 对本项目提供的所有支持
+
+## License
+
+本项目采用 [MIT License](LICENSE) 开源许可。
+
+Copyright (c) 2026 Cheney
+
+基于本项目进行使用、修改、分发或再分发时，须保留上述版权声明与许可条款（详见 [LICENSE](LICENSE) 文件全文）。
