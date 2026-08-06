@@ -1,10 +1,12 @@
 # Steam CS2 库存监控器 v2.2
 
+> **简体中文** · [English](README_EN.md)
+
 监控 Steam CS2 库存变化，支持存储单元活动检测、历史归档、Web 仪表盘。
 
 ## 快速开始（Windows）
 
-### 1. 解压后双击 `安装.bat`
+### 1. 解压后双击 `install.bat`
 
 自动完成：创建虚拟环境 → 安装依赖 → 初始化数据库
 
@@ -17,7 +19,7 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 
 > Steam++ 需开启 **hosts 加速**模式，加速 Steam 社区
 
-### 3. 双击 `启动.bat`
+### 3. 双击 `start.bat`
 
 浏览器自动打开 `http://localhost:8080`
 
@@ -48,8 +50,8 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 ## 项目结构
 
 ```
-├── 安装.bat              # 一键安装
-├── 启动.bat              # 一键启动
+├── install.bat           # 一键安装
+├── start.bat             # 一键启动
 ├── run_web.py            # Web 仪表盘入口
 ├── src/
 │   ├── main.py           # 纯监控入口（无 Web）
@@ -68,6 +70,7 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 ├── tests/                # 测试（59 个用例）
 ├── requirements.lock     # 依赖锁定（可复现安装）
 ├── CHANGELOG.md          # 更新日志
+├── README_EN.md          # 英文文档
 ├── LICENSE               # MIT 许可证
 ├── .env.example          # 配置模板
 ├── Dockerfile
