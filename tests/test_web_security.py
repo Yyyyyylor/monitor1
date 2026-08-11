@@ -119,6 +119,20 @@ def test_frontend_keeps_session_token_out_of_local_storage() -> None:
     assert "asset_id: ${esc(item.asset_id)}" in content
 
 
+def test_inventory_images_use_bounded_viewport_aware_preloading() -> None:
+    content = (Path(__file__).parents[1] / "src" / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    assert '<link rel="preconnect" href="https://steamcommunity-a.akamaihd.net">' in content
+    assert "const INVENTORY_IMAGE_CONCURRENCY = 6;" in content
+    assert "const INVENTORY_EAGER_IMAGE_COUNT = 12;" in content
+    assert "window.matchMedia('(max-width: 768px)').matches ? 4" in content
+    assert "root: document.getElementById('content'), rootMargin: '720px 0px'" in content
+    assert "img.setAttribute('fetchpriority', 'high');" in content
+    assert "inventoryImageGeneration += 1;" in content
+    assert "setTimeout(renderFilteredItems, 180)" in content
+    assert 'data-src="${esc(imgUrl(item.icon_url))}"' in content
+    assert 'data-src="${esc(imgUrl(representative.icon_url))}"' in content
+
+
 async def test_login_returns_only_httponly_cookie_and_logout_revokes_it(mocker) -> None:
     from src.db import repository
 

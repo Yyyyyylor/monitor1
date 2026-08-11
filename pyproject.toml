@@ -1,6 +1,6 @@
 [project]
 name = "steam-cs2-inventory-monitor"
-version = "2.3.0"
+version = "2.4.0"
 description = "Monitor Steam CS2 inventory changes with paginated fetching, swap detection, and event-sourced storage"
 readme = "README.md"
 requires-python = ">=3.10"

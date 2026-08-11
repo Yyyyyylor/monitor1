@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="preconnect" href="https://steamcommunity-a.akamaihd.net">
 <title>Steam CS2 库存监控器</title>
 <style>
 :root {
@@ -147,12 +148,120 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); co
 .freq-tier-name { width: 60px; font-weight: 600; }
 .freq-tier-count { width: 40px; color: var(--text2); }
 .freq-tier-last { flex: 1; color: var(--text3); font-size: 11px; }
+
+/* v2.4 visual system: compact cyber-operations workspace, built without external assets. */
+:root {
+  --bg: #080d12;
+  --card: #101923;
+  --card-strong: #14202c;
+  --border: rgba(163, 205, 218, .14);
+  --accent: #2bc5a8;
+  --accent2: #71d4e7;
+  --green: #48d17e;
+  --red: #ff6b70;
+  --orange: #f8bf67;
+  --text: #eef7f7;
+  --text2: #b5c7ca;
+  --text3: #789095;
+}
+body {
+  font-family: Bahnschrift, "Microsoft YaHei UI", "Segoe UI", sans-serif;
+  letter-spacing: .01em;
+  background:
+    radial-gradient(circle at 88% -18%, rgba(43, 197, 168, .17), transparent 36rem),
+    radial-gradient(circle at -10% 80%, rgba(77, 136, 173, .14), transparent 34rem),
+    var(--bg);
+}
+body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opacity: .22; background-image: linear-gradient(rgba(255,255,255,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.015) 1px, transparent 1px); background-size: 36px 36px; mask-image: linear-gradient(to bottom, #000, transparent 80%); }
+.header { min-height: 70px; padding: 12px clamp(16px, 3vw, 40px); background: rgba(8, 13, 18, .86); backdrop-filter: blur(20px); border-bottom-color: rgba(163,205,218,.12); box-shadow: 0 10px 35px rgba(0,0,0,.12); }
+.header h1 { font-size: clamp(16px, 2vw, 21px); font-weight: 750; letter-spacing: .025em; }
+.header h1::first-letter { color: var(--accent); }
+.app-brand { display: grid; gap: 2px; }
+.app-brand::after { content: "INVENTORY INTELLIGENCE"; color: var(--text3); font-size: 9px; font-weight: 700; letter-spacing: .19em; padding-left: 32px; }
+.header-right { gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.status-dot { width: 8px; height: 8px; margin-left: 4px; }
+.status-dot.on { box-shadow: 0 0 0 5px rgba(72,209,126,.10), 0 0 14px var(--green); }
+.status-text { padding-right: 8px; font-size: 12px; }
+.btn { min-height: 32px; padding: 7px 13px; border: 1px solid transparent; border-radius: 9px; font-family: inherit; letter-spacing: .015em; box-shadow: 0 1px 0 rgba(255,255,255,.04) inset; }
+.btn-primary { background: linear-gradient(135deg, #27b99f, #15967f); box-shadow: 0 8px 18px rgba(21,150,127,.18); }
+.btn-primary:hover { background: linear-gradient(135deg, #3bd1b4, #1fa890); transform: translateY(-1px); }
+.btn-success { background: linear-gradient(135deg, #35be6a, #279855); }
+.btn-ghost { background: rgba(255,255,255,.025); border-color: var(--border); }
+.main { height: calc(100vh - 70px); }
+.sidebar { width: clamp(272px, 23vw, 330px); background: rgba(13, 22, 31, .76); backdrop-filter: blur(12px); }
+.sidebar-header { padding: 20px 18px 14px; }
+.sidebar-header h3, .freq-panel h3 { color: var(--text3); font-size: 10px; letter-spacing: .18em; }
+.content { padding: clamp(18px, 2.5vw, 34px); scroll-behavior: smooth; }
+.user-card { position: relative; margin: 5px 9px; padding: 12px; border: 1px solid transparent; border-radius: 12px; }
+.user-card:hover { background: rgba(113,212,231,.06); border-color: rgba(113,212,231,.13); transform: translateX(2px); }
+.user-card.active { background: linear-gradient(100deg, rgba(43,197,168,.17), rgba(113,212,231,.055)); border: 1px solid rgba(43,197,168,.23); border-left: 3px solid var(--accent); }
+.user-avatar { background: linear-gradient(145deg, #1a2b38, #0f1720); border: 1px solid rgba(113,212,231,.13); }
+.user-name { letter-spacing: .02em; }
+.user-name { display: flex !important; align-items: center !important; gap: 8px !important; min-width: 0; width: 100%; }
+.user-name-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-badges { display: flex; flex: 0 0 auto; align-items: center; gap: 6px; white-space: nowrap; }
+.user-badges .badge, .user-badges .freq-badge { white-space: nowrap; }
+.user-meta { gap: 10px; margin-top: 5px; }
+.stats-row { gap: 13px; margin-bottom: 25px; }
+.stat-card { position: relative; overflow: hidden; min-height: 108px; padding: 19px; border-radius: 15px; background: linear-gradient(145deg, rgba(23,35,47,.92), rgba(13,22,31,.92)); box-shadow: 0 14px 30px rgba(0,0,0,.11); }
+.stat-card::after { content: ""; position: absolute; right: -18px; bottom: -24px; width: 82px; height: 82px; border: 1px solid rgba(113,212,231,.15); border-radius: 50%; }
+.stat-card .label { letter-spacing: .12em; font-size: 10px; }
+.stat-card .value { font-size: clamp(25px, 3vw, 34px); font-variant-numeric: tabular-nums; }
+.cat-tabs { gap: 8px; margin-bottom: 18px; }
+.cat-tab { padding: 7px 13px; border-radius: 999px; background: rgba(16,25,35,.72); }
+.cat-tab.active { background: rgba(43,197,168,.17); color: #b9f8ea; border-color: rgba(43,197,168,.38); }
+.filter-bar { position: sticky; top: -20px; z-index: 5; padding: 11px 0; margin-bottom: 12px; background: linear-gradient(to bottom, var(--bg) 72%, transparent); }
+.filter-bar input, .filter-bar select, input, textarea { border-color: var(--border); background: rgba(6,13,19,.72); border-radius: 9px; font-family: inherit; }
+.filter-bar input { min-width: min(100%, 240px); flex: 1; }
+.item-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+.item-card { border-radius: 14px; border-color: rgba(163,205,218,.12); background: linear-gradient(150deg, rgba(22,33,45,.96), rgba(12,20,29,.96)); box-shadow: 0 8px 22px rgba(0,0,0,.13); animation: card-enter .38s both; animation-delay: min(calc(var(--item-index, 0) * 28ms), 280ms); }
+.item-card:hover { transform: translateY(-5px); box-shadow: 0 16px 34px rgba(0,0,0,.25), 0 0 0 1px rgba(43,197,168,.35); border-color: rgba(43,197,168,.45); }
+.item-wear-bar { height: 4px; }
+.item-img-box { height: 132px; position: relative; padding: 12px; background: radial-gradient(circle at 50% 38%, rgba(113,212,231,.12), transparent 62%), rgba(3,8,13,.48); }
+.item-img-box::after { content: ""; position: absolute; inset: 0; background: linear-gradient(105deg, transparent 38%, rgba(255,255,255,.07) 50%, transparent 62%); transform: translateX(-100%); animation: image-sheen 1.3s ease-in-out infinite; }
+.item-img-box:has(img.is-loaded)::after, .item-img-box:has(img.is-failed)::after { display: none; }
+.item-img-box img { position: relative; z-index: 1; opacity: 0; transform: scale(.96); transition: opacity .24s ease, transform .3s cubic-bezier(.2,.8,.2,1); }
+.item-img-box img.is-loaded { opacity: 1; transform: scale(1); }
+.item-img-box img.is-failed { opacity: .35; }
+.item-info { padding: 11px 12px 12px; }
+.item-name { line-height: 1.35; font-size: 12px; }
+.item-bottom { gap: 7px; margin-top: 7px; }
+.item-rarity { overflow: hidden; max-width: 56%; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border-radius: 5px; }
+.item-st-badge, .item-count-badge { top: 9px; padding: 3px 6px; border-radius: 6px; backdrop-filter: blur(8px); }
+.panel { border-radius: 15px; background: linear-gradient(145deg, rgba(17,27,38,.92), rgba(12,20,29,.92)); box-shadow: 0 12px 32px rgba(0,0,0,.11); }
+.panel-header { padding: 16px 20px; }
+.panel-header h2 { font-size: 15px; letter-spacing: .03em; }
+.panel-body { padding: 20px; }
+.tabs { gap: 5px; padding: 8px 12px 0; }
+.tab { border-radius: 8px 8px 0 0; padding: 10px 14px; }
+.tab.active { background: rgba(43,197,168,.07); color: #b9f8ea; }
+.change-item { gap: 12px; padding: 11px 0; }
+.change-time { font-variant-numeric: tabular-nums; }
+.modal-overlay { padding: 18px; background: rgba(3,8,13,.76); backdrop-filter: blur(8px); animation: overlay-enter .18s ease; }
+.modal-overlay > div:not(.modal-detail), .modal-detail { background: linear-gradient(145deg, #172431, #0e1721) !important; border-color: rgba(163,205,218,.18) !important; box-shadow: 0 28px 75px rgba(0,0,0,.44); animation: modal-enter .26s cubic-bezier(.2,.85,.25,1); }
+.empty { padding: min(20vh, 150px) 20px; }
+.empty .icon { filter: drop-shadow(0 10px 18px rgba(43,197,168,.22)); }
+.toast { border-color: rgba(43,197,168,.3); background: rgba(17,28,38,.94); backdrop-filter: blur(12px); box-shadow: 0 14px 36px rgba(0,0,0,.26); }
+.manage-table-wrap { overflow-x: auto; overscroll-behavior-inline: contain; }
+.manage-table { table-layout: fixed; min-width: 650px; }
+.manage-table th, .manage-table td { padding-inline: 8px; }
+.manage-action-cell { padding-inline: 6px !important; }
+.manage-action-buttons { display: flex; align-items: center; gap: 6px; min-width: 132px; }
+.manage-action-buttons .btn { width: 40px; height: 40px; min-height: 40px; flex: 0 0 40px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+@keyframes card-enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes image-sheen { 55%, 100% { transform: translateX(100%); } }
+@keyframes overlay-enter { from { opacity: 0; } to { opacity: 1; } }
+@keyframes modal-enter { from { opacity: 0; transform: translateY(12px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; } }
+@media (max-width: 768px) { .header { align-items: flex-start; gap: 10px; flex-direction: column; } .header-right { width: 100%; justify-content: flex-start; } .main { height: auto; min-height: calc(100vh - 130px); } .sidebar { width: 100%; max-height: 250px; } .content { min-height: 60vh; } .filter-bar { top: 0; } .item-grid { grid-template-columns: repeat(auto-fill, minmax(146px, 1fr)); gap: 10px; } .item-img-box { height: 116px; } }
 </style>
 </head>
 <body>
 
 <div class="header">
+  <div class="app-brand">
   <h1>🎯 Steam CS2 库存监控器</h1>
+  </div>
   <div class="header-right">
     <span class="status-dot" id="statusDot"></span>
     <span class="status-text" id="statusText">检查中...</span>
@@ -230,6 +339,17 @@ const API = '';
 let currentSteamId = null, editingSteamId = null, pollTimer = null, heartbeatTimer = null, wsConn = null;
 let currentInventory = null, activeCategory = 'all', displayMode = 'stacked';
 
+// Steam CDN images are network-bound.  Keep a small, predictable request queue so
+// the first visible cards load first without starting hundreds of image fetches at once.
+const INVENTORY_IMAGE_CONCURRENCY = 6;
+const INVENTORY_EAGER_IMAGE_COUNT = 12;
+let inventoryImageQueue = [];
+let inventoryImageLoads = 0;
+let inventoryImageObserver = null;
+let inventoryImageGeneration = 0;
+let inventoryImageActive = new Set();
+let searchDebounceTimer = null;
+
 // --- HTML / 属性安全转义（防 XSS） ---
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -247,6 +367,69 @@ const RARITY_COLORS = { 'Consumer Grade': '#b0c3d9', 'Industrial Grade': '#5e98d
 function getWearColor(name) { for (const [k, v] of Object.entries(WEAR_COLORS)) { if (name && name.includes(k)) return v; } return '#636e72'; }
 function getRarityColor(name) { if (!name) return '#b0c3d9'; for (const [k, v] of Object.entries(RARITY_COLORS)) { if (name.includes(k)) return v; } return '#b0c3d9'; }
 function imgUrl(icon) { return icon ? `https://steamcommunity-a.akamaihd.net/economy/image/${icon}/120x120` : ''; }
+
+function queueInventoryImage(img, priority = false) {
+  if (!img || !img.dataset.src || img.dataset.imageState) return;
+  img.dataset.imageState = 'queued';
+  if (priority) inventoryImageQueue.unshift(img); else inventoryImageQueue.push(img);
+  drainInventoryImageQueue();
+}
+
+function drainInventoryImageQueue() {
+  const maxConcurrentLoads = window.matchMedia('(max-width: 768px)').matches ? 4 : INVENTORY_IMAGE_CONCURRENCY;
+  while (inventoryImageLoads < maxConcurrentLoads && inventoryImageQueue.length) {
+    const img = inventoryImageQueue.shift();
+    if (!img?.isConnected || img.dataset.imageState !== 'queued') continue;
+    inventoryImageLoads += 1;
+    img.dataset.imageState = 'loading';
+    const loadGeneration = inventoryImageGeneration;
+    inventoryImageActive.add(img);
+    const finish = async (loaded) => {
+      if (loadGeneration !== inventoryImageGeneration) return;
+      inventoryImageActive.delete(img);
+      if (loaded && typeof img.decode === 'function') {
+        try { await img.decode(); } catch (_) { /* image was already rendered or cannot be decoded */ }
+      }
+      img.classList.add(loaded ? 'is-loaded' : 'is-failed');
+      inventoryImageLoads -= 1;
+      drainInventoryImageQueue();
+    };
+    img.addEventListener('load', () => finish(true), { once: true });
+    img.addEventListener('error', () => finish(false), { once: true });
+    img.src = img.dataset.src;
+  }
+}
+
+function prepareInventoryImageLoading() {
+  inventoryImageObserver?.disconnect();
+  inventoryImageGeneration += 1;
+  for (const img of inventoryImageActive) img.removeAttribute('src');
+  inventoryImageActive.clear();
+  inventoryImageLoads = 0;
+  inventoryImageQueue = [];
+  const images = [...document.querySelectorAll('#itemGrid img[data-src]')].filter(img => {
+    if (img.dataset.src) return true;
+    img.classList.add('is-failed');
+    return false;
+  });
+  if (!images.length) return;
+  images.slice(0, 6).forEach(img => {
+    img.setAttribute('fetchpriority', 'high');
+    queueInventoryImage(img, true);
+  });
+  images.slice(6, INVENTORY_EAGER_IMAGE_COUNT).forEach(img => {
+    img.setAttribute('fetchpriority', 'auto');
+    queueInventoryImage(img, true);
+  });
+  inventoryImageObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      queueInventoryImage(entry.target);
+      inventoryImageObserver.unobserve(entry.target);
+    }
+  }, { root: document.getElementById('content'), rootMargin: '720px 0px' });
+  images.slice(INVENTORY_EAGER_IMAGE_COUNT).forEach(img => inventoryImageObserver.observe(img));
+}
 
 // --- API (带认证) ---
 async function api(method, path, body) {
@@ -335,7 +518,7 @@ async function loadUsers() {
     return `<div class="user-card${active}" onclick="selectUser(${jsonAttr(u.steam_id)})">
       <div class="user-avatar">👤</div>
       <div class="user-info">
-        <div class="user-name" style="display:flex;align-items:center;gap:6px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${esc(u.nickname||u.steam_id)}</span> ${badge} ${freqBadge}</div>
+        <div class="user-name"><span class="user-name-text">${esc(u.nickname||u.steam_id)}</span><span class="user-badges">${badge}${freqBadge}</span></div>
         <div class="user-meta"><span>📦 ${u.item_count}件</span><span>Σ ${u.api_total_count}</span></div>
       </div></div>`;
   }).join('');
@@ -473,7 +656,7 @@ function renderItemCard(item, count) {
     <div class="item-wear-bar" style="background:${wearColor}"></div>
     ${isST?'<div class="item-st-badge">ST</div>':''}
     ${count>1?`<div class="item-count-badge">×${count}</div>`:''}
-    <div class="item-img-box"><img src="${esc(imgUrl(item.icon_url))}" alt="" loading="lazy"></div>
+    <div class="item-img-box"><img data-src="${esc(imgUrl(item.icon_url))}" alt="${esc(displayName)}" decoding="async" fetchpriority="low"></div>
     <div class="item-info">
       <div class="item-name" title="${esc(item.market_hash_name)}">${esc(displayName)}</div>
       <div class="item-bottom">
@@ -492,7 +675,10 @@ function filterCat(cat, el) {
 }
 
 function applySort() { renderFilteredItems(); }
-function applySearch() { renderFilteredItems(); }
+function applySearch() {
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(renderFilteredItems, 180);
+}
 
 function renderFilteredItems() {
   if (!currentInventory) return;
@@ -524,6 +710,10 @@ function renderFilteredItems() {
     if (sort === 'wear-desc') items.sort((a,b)=>(b.attributes?.paint_wear||0)-(a.attributes?.paint_wear||0));
     document.getElementById('itemGrid').innerHTML = items.map(i => renderItemCard(i)).join('');
   }
+  document.querySelectorAll('#itemGrid .item-card').forEach((card, index) =>
+    card.style.setProperty('--item-index', index)
+  );
+  prepareInventoryImageLoading();
 }
 
 // --- Stacked card ---
@@ -550,7 +740,7 @@ function renderStackedCard(representative, groupItems) {
     <div class="item-wear-bar" style="background:${wearColor}"></div>
     ${isST?'<div class="item-st-badge">ST</div>':''}
     ${count>1?`<div class="item-count-badge">×${count}</div>`:''}
-    <div class="item-img-box"><img src="${esc(imgUrl(representative.icon_url))}" alt="" loading="lazy"></div>
+    <div class="item-img-box"><img data-src="${esc(imgUrl(representative.icon_url))}" alt="${esc(displayName)}" decoding="async" fetchpriority="low"></div>
     <div class="item-info">
       <div class="item-name" title="${esc(representative.market_hash_name)}">${esc(displayName)}</div>
       <div class="item-bottom">
@@ -829,15 +1019,15 @@ async function showManagePanel() {
         <input type="file" id="importFile" accept=".cs2mon" style="display:none" onchange="doImport(this)">
       </div>
     </div>
-    <div class="panel-body" style="padding:0">
-      <table class="inv-table" style="table-layout:fixed">
+    <div class="panel-body" style="padding:0"><div class="manage-table-wrap">
+      <table class="inv-table manage-table">
         <colgroup>
           <col style="width:auto">
           <col style="width:130px">
           <col style="width:70px">
           <col style="width:80px">
           <col style="width:65px">
-          <col style="width:120px">
+          <col style="width:140px">
         </colgroup>
         <thead><tr><th>昵称</th><th>Steam ID</th><th>状态</th><th>库存</th><th>频率</th><th>操作</th></tr></thead>
         <tbody>`;
@@ -865,14 +1055,16 @@ async function showManagePanel() {
       <td>${statusBadge}</td>
       <td style="font-size:12px">${u.item_count} / ${u.api_total_count}</td>
       <td>${freqSelect}</td>
-      <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-ghost" title="编辑备注" onclick="editUser(${jsonAttr(u.steam_id)});showManagePanel()">✏️</button>
-        <button class="btn btn-sm btn-ghost" title="${u.is_active?'停用':'启用'}" onclick="toggleUserActive(${jsonAttr(u.steam_id)});setTimeout(showManagePanel,300)">${u.is_active?'⏸':'▶'}</button>
-        <button class="btn btn-sm btn-ghost" style="color:var(--red)" title="移入回收站" onclick="deleteUser(${jsonAttr(u.steam_id)});setTimeout(showManagePanel,300)">🗑️</button>
+      <td class="manage-action-cell">
+        <div class="manage-action-buttons">
+          <button class="btn btn-sm btn-ghost" title="编辑备注" onclick="editUser(${jsonAttr(u.steam_id)});showManagePanel()">✏️</button>
+          <button class="btn btn-sm btn-ghost" title="${u.is_active?'停用':'启用'}" onclick="toggleUserActive(${jsonAttr(u.steam_id)});setTimeout(showManagePanel,300)">${u.is_active?'⏸':'▶'}</button>
+          <button class="btn btn-sm btn-ghost" style="color:var(--red)" title="移入回收站" onclick="deleteUser(${jsonAttr(u.steam_id)});setTimeout(showManagePanel,300)">🗑️</button>
+        </div>
       </td>
     </tr>`;
   }
-  html += '</tbody></table></div></div>';
+  html += '</tbody></table></div></div></div>';
 
   // 频率管理面板
   html += `<div class="freq-panel" id="freqPanel">

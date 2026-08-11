@@ -1,4 +1,4 @@
-# Steam CS2 Inventory Monitor v2.2
+# Steam CS2 Inventory Monitor v2.4.0
 
 > [简体中文](README.md) · **English**
 
@@ -19,13 +19,18 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 
 > Steam++ requires **hosts acceleration** mode enabled to accelerate Steam Community
 
-## Security and Deployment (v2.3.0)
+## Security and Deployment (v2.4.0)
 
 - Store the dashboard password only as an scrypt verifier in `WEB_PASSWORD_HASH`. Use
   `scripts/migrate_web_password.py --password-env <environment-variable>` to update it without writing plaintext back to `.env`.
 - Sessions use short-lived, revocable `HttpOnly` cookies. Logging out invalidates the current session immediately.
 - Imports are validated for Steam IDs, file size, nesting depth, and inventory/history limits before one atomic database transaction.
 - Docker publishes only `127.0.0.1:8080` by default and runs non-root with a read-only root filesystem. Put any public deployment behind HTTPS.
+
+## WebUI and Image Loading (v2.4.0)
+
+- The responsive operations-console UI adds calmer spacing, tiered stat cards, category pills, unified modals, and restrained motion. It automatically minimizes motion when the operating system requests reduced motion.
+- Inventory images still load directly from Steam CDN, but now use six high-priority/auto first-screen requests followed by a bounded six-request queue (four on mobile), content-viewport prefetching, asynchronous decoding, and fade-in. This improves first-screen and scroll performance without risky unlimited CDN concurrency.
 
 ### 3. Double-click `start.bat`
 
@@ -38,6 +43,7 @@ The browser opens `http://localhost:8080` automatically
 ### Web Dashboard
 - 🎯 Category browsing (Rifles / Pistols / Knives / Gloves, etc.)
 - 🖼️ Item image display
+- ⚡ First-screen-prioritized, viewport-prefetched inventory images
 - 🎨 Wear color bar + quality badge + StatTrak marker
 - 🔍 Search by name, sort by wear / name
 - 📋 Item detail modal (stickers / wear / pattern seed / phase)
