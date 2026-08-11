@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     fetch_concurrency: int = 3
     # 每用户起始随机抖动上限（秒），打散请求避免对齐 Steam 限流窗口
     fetch_jitter_seconds: float = 1.5
+    # 防止异常分页响应导致无限请求或内存耗尽。
+    max_inventory_pages: int = 100
+    max_inventory_items: int = 250_000
 
     # ---- 分层调度（Tiered Scheduling） ----
     # 设 tiered_scheduling_enabled=false 则完全沿用旧版的 fetch_interval_minutes 统一间隔
@@ -67,9 +70,21 @@ class Settings(BaseSettings):
     health_server_host: str = "127.0.0.1"
     health_server_port: int = 8080
 
-    # Web 访问密码
-    # 留空则首次启动时自动生成随机密码并打印到控制台
+    # Web 访问密码。优先使用由 scrypt 生成的 WEB_PASSWORD_HASH；
+    # WEB_PASSWORD 只保留一个发布周期的迁移兼容，不会再自动生成或写入日志。
     web_password: str = ""
+    web_password_hash: str = ""
+    web_allow_legacy_plaintext_password: bool = False
+    # 非 HTTPS 管理请求默认拒绝。仅本机开发时可显式开启。
+    web_allow_insecure_http: bool = False
+    # 仅在受信任的反向代理已剥离外部请求头时开启。
+    web_trust_proxy_headers: bool = False
+    web_max_upload_bytes: int = 10 * 1024 * 1024
+    web_max_import_users: int = 100
+    web_max_import_items_per_user: int = 100_000
+    web_max_import_changes_per_user: int = 2_000
+    web_max_import_archives_per_user: int = 1_000
+    web_max_export_users: int = 100
 
     # 存储维护
     change_retention_days: int = 7

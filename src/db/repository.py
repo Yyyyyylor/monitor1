@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 import zlib
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from src.config import settings
 from src.db.database import async_session_factory
@@ -497,6 +498,9 @@ async def set_user_frequency(steam_id: str, frequency: str) -> bool:
 # ---------------------------------------------------------------------------
 
 EXPORT_VERSION = "1.0"
+_STEAM_ID_RE = re.compile(r"^\d{17}$")
+_MAX_IMPORT_NESTING = 32
+_MAX_IMPORT_STRING_LENGTH = 4_096
 
 
 async def export_all_data() -> dict[str, Any]:
@@ -505,6 +509,17 @@ async def export_all_data() -> dict[str, Any]:
     使用分批查询避免一次性加载全部数据到内存。
     """
     async with async_session_factory() as session:
+        user_count = await session.scalar(select(func.count()).select_from(MonitoredUser))
+        if (user_count or 0) > settings.web_max_export_users:
+            raise ValueError("Export exceeds the configured user limit")
+        archive_count = await session.scalar(select(func.count()).select_from(SnapshotArchive))
+        archive_limit = settings.web_max_export_users * settings.web_max_import_archives_per_user
+        if (archive_count or 0) > archive_limit:
+            raise ValueError("Export exceeds the configured archive limit")
+        change_count = await session.scalar(select(func.count()).select_from(InventoryChange))
+        change_limit = settings.web_max_export_users * settings.web_max_import_changes_per_user
+        if (change_count or 0) > change_limit:
+            raise ValueError("Export exceeds the configured change limit")
         # 所有用户（含回收站）
         user_result = await session.execute(select(MonitoredUser))
         all_users = user_result.scalars().all()
@@ -587,103 +602,210 @@ async def export_all_data() -> dict[str, Any]:
     }
 
 
-async def import_all_data(data: dict[str, Any]) -> dict[str, int]:
-    """从导出字典导入数据。返回 {"created": int, "updated": int, "skipped": int}。"""
-    version = data.get("version", "")
-    if version != EXPORT_VERSION:
-        raise ValueError(f"Unsupported export version: {version!r}")
+def _validate_json_value(value: Any, *, depth: int = 0) -> None:
+    """限制导入 JSON 的嵌套、键数和字符串大小，避免解析后资源放大。"""
+    if depth > _MAX_IMPORT_NESTING:
+        raise ValueError("Import payload is nested too deeply")
+    if value is None or isinstance(value, (bool, int, float)):
+        return
+    if isinstance(value, str):
+        if len(value) > _MAX_IMPORT_STRING_LENGTH:
+            raise ValueError("Import payload contains an oversized string")
+        return
+    if isinstance(value, list):
+        if len(value) > settings.web_max_import_items_per_user:
+            raise ValueError("Import payload contains too many list entries")
+        for entry in value:
+            _validate_json_value(entry, depth=depth + 1)
+        return
+    if isinstance(value, dict):
+        if len(value) > settings.web_max_import_items_per_user:
+            raise ValueError("Import payload contains too many object entries")
+        for key, entry in value.items():
+            if not isinstance(key, str) or len(key) > 256:
+                raise ValueError("Import payload contains an invalid object key")
+            _validate_json_value(entry, depth=depth + 1)
+        return
+    raise ValueError("Import payload contains an unsupported value")
 
-    users_list: list[dict[str, Any]] = data.get("users", [])
-    stats = {"created": 0, "updated": 0, "skipped": 0}
 
+def _parse_import_datetime(value: Any, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} is required")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be ISO-8601") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _validate_import_data(data: Any) -> list[dict[str, Any]]:
+    """在写库前完整验证导入文件，保证失败不会留下部分数据。"""
+    if not isinstance(data, dict):
+        raise ValueError("Import payload must be a JSON object")
+    if data.get("app") != "steam-cs2-inventory-monitor":
+        raise ValueError("Invalid export source")
+    if data.get("version") != EXPORT_VERSION:
+        raise ValueError(f"Unsupported export version: {data.get('version')!r}")
+    users_list = data.get("users")
+    if not isinstance(users_list, list):
+        raise ValueError("Import payload users must be a list")
+    if len(users_list) > settings.web_max_import_users:
+        raise ValueError("Import payload contains too many users")
+
+    seen_ids: set[str] = set()
     for entry in users_list:
-        sid = entry.get("steam_id", "")
-        if not sid:
-            stats["skipped"] += 1
-            continue
+        if not isinstance(entry, dict):
+            raise ValueError("Each imported user must be an object")
+        sid = entry.get("steam_id")
+        if not isinstance(sid, str) or not _STEAM_ID_RE.fullmatch(sid):
+            raise ValueError("Imported steam_id must be a 17-digit Steam ID")
+        if sid in seen_ids:
+            raise ValueError("Import payload contains duplicate steam_id values")
+        seen_ids.add(sid)
+        nickname = entry.get("nickname")
+        if nickname is not None and (not isinstance(nickname, str) or len(nickname) > 128):
+            raise ValueError("Imported nickname must be a string up to 128 characters")
+        if "is_active" in entry and not isinstance(entry["is_active"], bool):
+            raise ValueError("Imported is_active must be a boolean")
+        if entry.get("monitor_frequency", "medium") not in ("high", "medium", "low"):
+            raise ValueError("Imported monitor_frequency is invalid")
 
-        async with async_session_factory() as session:
-            result = await session.execute(
-                select(MonitoredUser).where(MonitoredUser.steam_id == sid)
-            )
-            user = result.scalar_one_or_none()
-            if user is None:
-                user = MonitoredUser(steam_id=sid)
-                session.add(user)
-                stats["created"] += 1
-            else:
-                stats["updated"] += 1
+        inventory = entry.get("current_inventory")
+        if inventory is not None:
+            if not isinstance(inventory, dict) or not isinstance(inventory.get("items"), dict):
+                raise ValueError("Imported current_inventory.items must be an object")
+            if len(inventory["items"]) > settings.web_max_import_items_per_user:
+                raise ValueError("Imported inventory has too many items")
+        changes = entry.get("recent_changes", [])
+        archives = entry.get("archives", [])
+        if not isinstance(changes, list) or len(changes) > settings.web_max_import_changes_per_user:
+            raise ValueError("Imported changes exceed the configured limit")
+        if not isinstance(archives, list) or len(archives) > settings.web_max_import_archives_per_user:
+            raise ValueError("Imported archives exceed the configured limit")
+        for change in changes:
+            if not isinstance(change, dict) or change.get("change_type") not in {c.value for c in ChangeType}:
+                raise ValueError("Imported change record is invalid")
+            for field_name in ("asset_id", "old_asset_id"):
+                value = change.get(field_name)
+                if value is not None and (not isinstance(value, str) or len(value) > 64):
+                    raise ValueError(f"Imported {field_name} is invalid")
+            _parse_import_datetime(change.get("change_time"), "change_time")
+        for archive in archives:
+            if not isinstance(archive, dict) or not isinstance(archive.get("items"), dict):
+                raise ValueError("Imported archive record is invalid")
+            if len(archive["items"]) > settings.web_max_import_items_per_user:
+                raise ValueError("Imported archive has too many items")
+            _parse_import_datetime(archive.get("captured_at"), "captured_at")
+        _validate_json_value(entry)
+    return users_list
 
-            user.nickname = entry.get("nickname") or user.nickname
-            user.is_active = entry.get("is_active", True)
-            freq = entry.get("monitor_frequency", "medium")
-            if freq in ("high", "medium", "low"):
-                user.monitor_frequency = freq
-            # 删除状态：如果源数据标记了 delete_at 且本地没有，保留本地的
-            if entry.get("deleted_at") and user.deleted_at is None:
-                pass  # 不覆盖本地状态
-            await session.commit()
 
-            # 当前库存
-            inv_data = entry.get("current_inventory")
-            if inv_data and inv_data.get("items"):
-                items_json = _compress(inv_data["items"])
-                existing_inv = await session.execute(
-                    select(CurrentInventoryState).where(CurrentInventoryState.steam_id == sid)
+def _event_key(change_type: ChangeType, asset_id: str, old_asset_id: str | None, change_time: datetime) -> tuple[str, str, str | None, str]:
+    return (change_type.value, asset_id, old_asset_id, change_time.astimezone(timezone.utc).isoformat())
+
+
+async def import_all_data(data: dict[str, Any]) -> dict[str, int]:
+    """校验完整导入文件后在一个事务中写入，失败时全部回滚。"""
+    users_list = _validate_import_data(data)
+    stats = {"created": 0, "updated": 0, "skipped": 0}
+    invalidated_ids: set[str] = set()
+
+    async with async_session_factory() as session:
+        async with session.begin():
+            for entry in users_list:
+                sid = entry["steam_id"]
+                result = await session.execute(
+                    select(MonitoredUser).where(MonitoredUser.steam_id == sid)
                 )
-                old_inv = existing_inv.scalar_one_or_none()
-                if old_inv:
-                    old_inv.snapshot_data = items_json
-                    old_inv.item_count = inv_data.get("item_count", len(inv_data["items"]))
-                    old_inv.api_total_count = inv_data.get("api_total_count", 0)
-                    old_inv.updated_at = datetime.now(timezone.utc)
+                user = result.scalar_one_or_none()
+                if user is None:
+                    user = MonitoredUser(steam_id=sid)
+                    session.add(user)
+                    stats["created"] += 1
                 else:
-                    session.add(CurrentInventoryState(
+                    stats["updated"] += 1
+
+                user.nickname = entry.get("nickname") or user.nickname
+                user.is_active = bool(entry.get("is_active", True))
+                user.monitor_frequency = entry.get("monitor_frequency", "medium")
+
+                inventory = entry.get("current_inventory")
+                if inventory is not None:
+                    existing_inv = await session.execute(
+                        select(CurrentInventoryState).where(CurrentInventoryState.steam_id == sid)
+                    )
+                    record = existing_inv.scalar_one_or_none()
+                    items_json = _compress(inventory["items"])
+                    if record is None:
+                        session.add(CurrentInventoryState(
+                            steam_id=sid,
+                            snapshot_data=items_json,
+                            item_count=int(inventory.get("item_count", len(inventory["items"]))),
+                            api_total_count=int(inventory.get("api_total_count", 0)),
+                        ))
+                    else:
+                        record.snapshot_data = items_json
+                        record.item_count = int(inventory.get("item_count", len(inventory["items"])))
+                        record.api_total_count = int(inventory.get("api_total_count", 0))
+                        record.updated_at = datetime.now(timezone.utc)
+                    invalidated_ids.add(sid)
+
+                existing_changes = await session.execute(
+                    select(InventoryChange).where(InventoryChange.steam_id == sid)
+                )
+                change_keys = {
+                    _event_key(
+                        row.change_type,
+                        row.asset_id,
+                        row.old_asset_id,
+                        row.change_time.replace(tzinfo=timezone.utc) if row.change_time.tzinfo is None else row.change_time,
+                    )
+                    for row in existing_changes.scalars().all()
+                }
+                for change in entry.get("recent_changes", []):
+                    change_type = ChangeType(change["change_type"])
+                    change_time = _parse_import_datetime(change["change_time"], "change_time")
+                    asset_id = str(change.get("asset_id", ""))
+                    old_asset_id = change.get("old_asset_id")
+                    if old_asset_id is not None:
+                        old_asset_id = str(old_asset_id)
+                    key = _event_key(change_type, asset_id, old_asset_id, change_time)
+                    if key in change_keys:
+                        continue
+                    session.add(InventoryChange(
                         steam_id=sid,
-                        snapshot_data=items_json,
-                        item_count=inv_data.get("item_count", len(inv_data["items"])),
-                        api_total_count=inv_data.get("api_total_count", 0),
+                        change_type=change_type,
+                        asset_id=asset_id,
+                        old_asset_id=old_asset_id,
+                        detail=_compress(change["detail"]) if change.get("detail") else None,
+                        snapshot_before=_compress(change["snapshot_before"]) if change.get("snapshot_before") else None,
+                        change_time=change_time,
                     ))
-                await session.commit()
+                    change_keys.add(key)
 
-            # 变化事件
-            for ch in entry.get("recent_changes", []):
-                detail = _compress(ch["detail"]) if ch.get("detail") else None
-                snap = _compress(ch["snapshot_before"]) if ch.get("snapshot_before") else None
-                ct = ch.get("change_type", "added")
-                if isinstance(ct, str):
-                    try:
-                        ct = ChangeType(ct)
-                    except ValueError:
-                        ct = ChangeType.MODIFIED  # fallback for unknown values
-                session.add(InventoryChange(
-                    steam_id=sid,
-                    change_type=ct,
-                    asset_id=ch.get("asset_id", ""),
-                    old_asset_id=ch.get("old_asset_id"),
-                    detail=detail,
-                    snapshot_before=snap,
-                ))
+                existing_archives = await session.execute(
+                    select(SnapshotArchive.captured_at).where(SnapshotArchive.steam_id == sid)
+                )
+                archive_times = {
+                    value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+                    for value in existing_archives.scalars().all()
+                }
+                for archive in entry.get("archives", []):
+                    captured_at = _parse_import_datetime(archive["captured_at"], "captured_at")
+                    if captured_at in archive_times:
+                        continue
+                    session.add(SnapshotArchive(
+                        steam_id=sid,
+                        captured_at=captured_at,
+                        snapshot_data=_compress(archive["items"]),
+                    ))
+                    archive_times.add(captured_at)
 
-            # 历史快照
-            for arch in entry.get("archives", []):
-                captured_str = arch.get("captured_at", "")
-                if captured_str:
-                    try:
-                        captured_dt = datetime.fromisoformat(captured_str)
-                    except ValueError:
-                        captured_dt = datetime.now(timezone.utc)
-                else:
-                    captured_dt = datetime.now(timezone.utc)
-                items_compressed = _compress(arch.get("items", []))
-                session.add(SnapshotArchive(
-                    steam_id=sid,
-                    captured_at=captured_dt,
-                    snapshot_data=items_compressed,
-                ))
-
-            await session.commit()
-
+    for sid in invalidated_ids:
+        _cache_invalidate(sid)
     return stats
 
 

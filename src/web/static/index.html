@@ -229,7 +229,6 @@ body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); co
 const API = '';
 let currentSteamId = null, editingSteamId = null, pollTimer = null, heartbeatTimer = null, wsConn = null;
 let currentInventory = null, activeCategory = 'all', displayMode = 'stacked';
-let authToken = localStorage.getItem('auth_token') || '';
 
 // --- HTML / 属性安全转义（防 XSS） ---
 function esc(s) {
@@ -252,7 +251,6 @@ function imgUrl(icon) { return icon ? `https://steamcommunity-a.akamaihd.net/eco
 // --- API (带认证) ---
 async function api(method, path, body) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } };
-  if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(API + path, opts);
   if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
@@ -268,12 +266,10 @@ async function doLogin() {
     const r = await fetch(API + '/api/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({password: pw}) });
     const d = await r.json();
     if (d.ok) {
-      authToken = d.token;
-      localStorage.setItem('auth_token', authToken);
       document.getElementById('loginOverlay').style.display = 'none';
       await init();
     } else {
-      document.getElementById('loginError').textContent = '密码错误';
+      document.getElementById('loginError').textContent = d.error || '密码错误';
       document.getElementById('loginError').style.display = '';
     }
   } catch(e) { document.getElementById('loginError').textContent = '连接失败'; document.getElementById('loginError').style.display = ''; }
@@ -283,13 +279,13 @@ function showLogin() {
   if (pollTimer) clearInterval(pollTimer);
 }
 async function checkAuth() {
-  try { const r = await fetch(API + '/api/users', { headers: authToken ? {'Authorization':'Bearer '+authToken} : {} }); return r.status !== 401; } catch { return false; }
+  try { const r = await fetch(API + '/api/users'); return r.status !== 401; } catch { return false; }
 }
 
 // --- WebSocket ---
 function connectWS() {
+  if (wsConn && (wsConn.readyState === WebSocket.OPEN || wsConn.readyState === WebSocket.CONNECTING)) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  wsConn = new WebSocket(`${proto}//${location.host}/api/ws`);
   wsConn = new WebSocket(`${proto}//${location.host}/api/ws`);
   wsConn.onmessage = (e) => {
     try {
@@ -309,7 +305,7 @@ function connectWS() {
       }
     } catch {}
   };
-  wsConn.onclose = () => { setTimeout(connectWS, 5000); };
+  wsConn.onclose = () => { wsConn = null; setTimeout(connectWS, 5000); };
 }
 
 // --- Heartbeat ---
@@ -336,7 +332,7 @@ async function loadUsers() {
         : (u.item_count > 0 ? `<span class="badge badge-ok">正常</span>` : `<span class="badge" style="background:rgba(253,203,110,0.15);color:var(--orange)">待抓取</span>`))
       : '<span class="badge badge-off">停用</span>';
     const freqBadge = `<span class="freq-badge freq-${u.monitor_frequency||'medium'}">${({'high':'⚡高','medium':'🕐中','low':'💤低'})[u.monitor_frequency||'medium']}</span>`;
-    return `<div class="user-card${active}" onclick="selectUser('${u.steam_id}')">
+    return `<div class="user-card${active}" onclick="selectUser(${jsonAttr(u.steam_id)})">
       <div class="user-avatar">👤</div>
       <div class="user-info">
         <div class="user-name" style="display:flex;align-items:center;gap:6px"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0">${esc(u.nickname||u.steam_id)}</span> ${badge} ${freqBadge}</div>
@@ -583,7 +579,7 @@ function showStackedDetail(assetIds) {
       <div>
         <span style="color:var(--text3);font-size:11px">#${idx+1}</span>
         <span style="font-size:13px;margin-left:6px">${w?w.toFixed(6):'—'}</span>
-        ${s?`<span style="font-size:11px;color:var(--text3);margin-left:8px">种子:${s}</span>`:''}
+        ${s?`<span style="font-size:11px;color:var(--text3);margin-left:8px">种子:${esc(s)}</span>`:''}
       </div>
       <div style="font-size:11px;color:var(--text3);max-width:50%;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(stickerStr)}">${esc(stickerStr)}</div>
     </div>`;
@@ -642,9 +638,9 @@ function showDetail(item) {
         <div class="meta-row">品质: <span style="color:${rarityColor}">${esc(rarityName)}</span></div>
         <div class="meta-row">外观: <span style="color:${wearColor}">${esc(wearName)}</span></div>
         ${wearVal?`<div class="meta-row">磨损: ${wearVal.toFixed(6)}</div>`:''}
-        ${seed?`<div class="meta-row">图案种子: ${seed}</div>`:''}
-        ${phase?`<div class="meta-row">阶段: ${phase}</div>`:''}
-        <div class="meta-row">asset_id: ${item.asset_id}</div>
+        ${seed?`<div class="meta-row">图案种子: ${esc(seed)}</div>`:''}
+        ${phase?`<div class="meta-row">阶段: ${esc(phase)}</div>`:''}
+        <div class="meta-row">asset_id: ${esc(item.asset_id)}</div>
       </div>
       <button class="close-btn" onclick="document.getElementById('detailModal').style.display='none'">×</button>
     </div>
@@ -776,10 +772,8 @@ async function doImport(input) {
   const form = new FormData();
   form.append('file', file);
   try {
-    const token = localStorage.getItem('auth_token') || '';
     const resp = await fetch('/api/import', {
       method: 'POST',
-      headers: token ? {'Authorization': 'Bearer ' + token} : {},
       body: form,
     });
     const r = await resp.json();
@@ -860,21 +854,21 @@ async function showManagePanel() {
     const freq = u.monitor_frequency || 'medium';
     const freqLabels = {high: '⚡', medium: '🕐', low: '💤'};
     const freqTitles = {high: '高频 5min', medium: '中频 10min', low: '低频 20min'};
-    const freqSelect = `<select class="freq-select" onchange="setUserFrequency('${u.steam_id}', this.value); this.blur()" onclick="event.stopPropagation()" title="${freqTitles[freq]}">
+    const freqSelect = `<select class="freq-select" onchange="setUserFrequency(${jsonAttr(u.steam_id)}, this.value); this.blur()" onclick="event.stopPropagation()" title="${esc(freqTitles[freq])}">
       <option value="high" ${freq==='high'?'selected':''}>⚡ 高</option>
       <option value="medium" ${freq==='medium'?'selected':''}>🕐 中</option>
       <option value="low" ${freq==='low'?'selected':''}>💤 低</option>
     </select>`;
     html += `<tr>
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><strong>${esc(u.nickname||'—')}</strong>${failHint}</td>
-      <td style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${u.steam_id}">${u.steam_id}</td>
+      <td style="font-size:11px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(u.steam_id)}">${esc(u.steam_id)}</td>
       <td>${statusBadge}</td>
       <td style="font-size:12px">${u.item_count} / ${u.api_total_count}</td>
       <td>${freqSelect}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-ghost" title="编辑备注" onclick="editUser('${u.steam_id}');showManagePanel()">✏️</button>
-        <button class="btn btn-sm btn-ghost" title="${u.is_active?'停用':'启用'}" onclick="toggleUserActive('${u.steam_id}');setTimeout(showManagePanel,300)">${u.is_active?'⏸':'▶'}</button>
-        <button class="btn btn-sm btn-ghost" style="color:var(--red)" title="移入回收站" onclick="deleteUser('${u.steam_id}');setTimeout(showManagePanel,300)">🗑️</button>
+        <button class="btn btn-sm btn-ghost" title="编辑备注" onclick="editUser(${jsonAttr(u.steam_id)});showManagePanel()">✏️</button>
+        <button class="btn btn-sm btn-ghost" title="${u.is_active?'停用':'启用'}" onclick="toggleUserActive(${jsonAttr(u.steam_id)});setTimeout(showManagePanel,300)">${u.is_active?'⏸':'▶'}</button>
+        <button class="btn btn-sm btn-ghost" style="color:var(--red)" title="移入回收站" onclick="deleteUser(${jsonAttr(u.steam_id)});setTimeout(showManagePanel,300)">🗑️</button>
       </td>
     </tr>`;
   }
@@ -897,12 +891,12 @@ async function showManagePanel() {
     for (const u of trash) {
       html += `<tr>
         <td><strong>${esc(u.nickname||'—')}</strong></td>
-        <td style="font-size:12px;color:var(--text3)">${u.steam_id}</td>
+        <td style="font-size:12px;color:var(--text3)">${esc(u.steam_id)}</td>
         <td>${u.item_count} 件</td>
         <td style="font-size:12px;color:var(--text3)">${u.deleted_at?new Date(u.deleted_at).toLocaleString():'—'}</td>
         <td style="white-space:nowrap">
-          <button class="btn btn-sm btn-success" onclick="restoreUser('${u.steam_id}');setTimeout(showManagePanel,300)">恢复</button>
-          <button class="btn btn-sm btn-danger" onclick="permanentDeleteUser('${u.steam_id}');setTimeout(showManagePanel,300)">永久删除</button>
+          <button class="btn btn-sm btn-success" onclick="restoreUser(${jsonAttr(u.steam_id)});setTimeout(showManagePanel,300)">恢复</button>
+          <button class="btn btn-sm btn-danger" onclick="permanentDeleteUser(${jsonAttr(u.steam_id)});setTimeout(showManagePanel,300)">永久删除</button>
         </td>
       </tr>`;
     }
@@ -966,12 +960,12 @@ async function showTrash() {
     <table class="inv-table"><thead><tr><th>用户</th><th>Steam ID</th><th>库存</th><th>删除时间</th><th>操作</th></tr></thead><tbody>
     ${trash.map(u => `<tr>
       <td><strong>${esc(u.nickname||'—')}</strong></td>
-      <td style="font-size:12px;color:var(--text3)">${u.steam_id}</td>
+      <td style="font-size:12px;color:var(--text3)">${esc(u.steam_id)}</td>
       <td>${u.item_count} 件</td>
       <td style="font-size:12px;color:var(--text3)">${u.deleted_at ? new Date(u.deleted_at).toLocaleString() : '—'}</td>
       <td>
-        <button class="btn btn-sm btn-success" onclick="restoreUser('${u.steam_id}')">恢复</button>
-        <button class="btn btn-sm btn-danger" onclick="permanentDeleteUser('${u.steam_id}')">永久删除</button>
+        <button class="btn btn-sm btn-success" onclick="restoreUser(${jsonAttr(u.steam_id)})">恢复</button>
+        <button class="btn btn-sm btn-danger" onclick="permanentDeleteUser(${jsonAttr(u.steam_id)})">永久删除</button>
       </td>
     </tr>`).join('')}
     </tbody></table></div></div>`;

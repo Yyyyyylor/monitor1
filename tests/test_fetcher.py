@@ -105,3 +105,18 @@ async def test_success_returns_full_inventory(mocker) -> None:
     assert result is not None
     assert result["total_items"] == 2
     assert {a["assetid"] for a in result["assets"]} == {"1", "2"}
+
+
+async def test_repeated_page_cursor_returns_none(mocker) -> None:
+    """上游重复分页游标时不能无限抓取或把部分库存作为完整结果。"""
+    _patch_deps(mocker)
+    mocker.patch.object(settings, "max_inventory_pages", 10)
+    repeated = _make_first_page()
+    mocker.patch.object(fetcher, "_fetch_page", AsyncMock(side_effect=[repeated, repeated]))
+
+    try:
+        result = await fetcher.fetch_inventory_paginated("76561190000000000")
+    finally:
+        await fetcher.close_client()
+
+    assert result is None

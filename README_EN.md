@@ -19,6 +19,14 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 
 > Steam++ requires **hosts acceleration** mode enabled to accelerate Steam Community
 
+## Security and Deployment (v2.3.0)
+
+- Store the dashboard password only as an scrypt verifier in `WEB_PASSWORD_HASH`. Use
+  `scripts/migrate_web_password.py --password-env <environment-variable>` to update it without writing plaintext back to `.env`.
+- Sessions use short-lived, revocable `HttpOnly` cookies. Logging out invalidates the current session immediately.
+- Imports are validated for Steam IDs, file size, nesting depth, and inventory/history limits before one atomic database transaction.
+- Docker publishes only `127.0.0.1:8080` by default and runs non-root with a read-only root filesystem. Put any public deployment behind HTTPS.
+
 ### 3. Double-click `start.bat`
 
 The browser opens `http://localhost:8080` automatically
@@ -67,7 +75,7 @@ The browser opens `http://localhost:8080` automatically
 │       ├── app.py        # API routes
 │       └── static/
 │           └── index.html
-├── tests/                # Tests (59 cases)
+├── tests/                # Tests (71 cases)
 ├── requirements.lock     # Locked dependencies (reproducible install)
 ├── CHANGELOG.md          # Changelog
 ├── README.md             # Documentation (Chinese)

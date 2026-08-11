@@ -17,6 +17,21 @@ STEAM_IDS=你的Steam64位ID
 STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 ```
 
+Web 管理端默认要求 HTTPS。仅在本机直接运行时，可额外设置
+`WEB_ALLOW_INSECURE_HTTP=true`；Docker 默认只绑定 `127.0.0.1`，公网部署必须
+通过可信的 HTTPS 反向代理，并设置 `WEB_TRUST_PROXY_HEADERS=true`。
+
+不要把明文 `WEB_PASSWORD` 提交、备份或放入镜像。请使用 `.env.example` 中的
+`WEB_PASSWORD_HASH` 格式保存 scrypt 校验值。
+
+## 安全与部署（v2.3.0）
+
+- 管理密码仅以 `WEB_PASSWORD_HASH` 的 scrypt 校验值保存；可使用
+  `scripts/migrate_web_password.py --password-env <环境变量名>` 更新密码，脚本不会写回明文。
+- 会话仅保存在短期、可撤销的 `HttpOnly` Cookie 中；退出登录会立即使当前会话失效。
+- 数据导入在写入前会验证 Steam ID、文件大小、嵌套深度和库存/历史记录上限；失败时整批回滚。
+- Docker 默认仅发布到 `127.0.0.1:8080`，以非 root 和只读根文件系统运行。公网访问必须通过 HTTPS 反向代理。
+
 > Steam++ 需开启 **hosts 加速**模式，加速 Steam 社区
 
 ### 3. 双击 `start.bat`
@@ -67,7 +82,7 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 │       ├── app.py        # API 路由
 │       └── static/
 │           └── index.html
-├── tests/                # 测试（59 个用例）
+├── tests/                # 测试（71 个用例）
 ├── requirements.lock     # 依赖锁定（可复现安装）
 ├── CHANGELOG.md          # 更新日志
 ├── README_EN.md          # 英文文档

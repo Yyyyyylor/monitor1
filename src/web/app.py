@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
@@ -47,7 +48,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 # 服务端密钥与常量
 # ---------------------------------------------------------------------------
 
-TOKEN_TTL = 86400  # 24 小时
+TOKEN_TTL = 3600  # 1 小时
 _TOKEN_SECRET = secrets.token_hex(32)  # 每次重启随机生成，旧 token 失效
 _HEARTBEAT_TIMEOUT = 15  # 心跳超时秒数
 
@@ -74,6 +75,8 @@ class WebState:
         "high": asyncio.Event(), "medium": asyncio.Event(), "low": asyncio.Event()
     })
     web_password_initialized: bool = False
+    active_sessions: dict[str, int] = field(default_factory=dict)
+    monitor_start_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 _state = WebState()
@@ -82,66 +85,146 @@ _state = WebState()
 # 认证工具
 # ---------------------------------------------------------------------------
 
-def _init_web_password() -> str:
-    """启动时一次性初始化 Web 密码，空则自动生成。"""
-    pwd = settings.web_password
-    if not pwd:
-        pwd = secrets.token_hex(8)
-        settings.web_password = pwd
-        logger.warning("=" * 60)
-        logger.warning("未配置 WEB_PASSWORD，已自动生成随机密码:")
-        logger.warning("  %s", pwd)
-        logger.warning("请妥善保存，或编辑 .env 中的 WEB_PASSWORD。")
-        logger.warning("=" * 60)
+def hash_password_for_storage(password: str) -> str:
+    """生成可放入 WEB_PASSWORD_HASH 的 scrypt 校验值。"""
+    salt = secrets.token_bytes(16)
+    n, r, p = 2**14, 8, 1
+    digest = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p)
+    return f"scrypt${n}${r}${p}${salt.hex()}${digest.hex()}"
+
+
+def _verify_password_hash(password: str, encoded: str) -> bool:
+    """验证受限参数的 scrypt 密码校验值，避免配置被篡改后造成资源耗尽。"""
+    try:
+        algorithm, n_s, r_s, p_s, salt_hex, digest_hex = encoded.split("$", 5)
+        n, r, p = int(n_s), int(r_s), int(p_s)
+        if algorithm != "scrypt" or n != 2**14 or r != 8 or p != 1:
+            return False
+        salt = bytes.fromhex(salt_hex)
+        expected = bytes.fromhex(digest_hex)
+        actual = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=n, r=r, p=p)
+        return hmac.compare_digest(actual, expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_supported_password_hash(encoded: str) -> bool:
+    try:
+        algorithm, n_s, r_s, p_s, salt_hex, digest_hex = encoded.split("$", 5)
+        return (
+            algorithm == "scrypt"
+            and (int(n_s), int(r_s), int(p_s)) == (2**14, 8, 1)
+            and len(bytes.fromhex(salt_hex)) == 16
+            and len(bytes.fromhex(digest_hex)) == 64
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _init_web_password() -> bool:
+    """检查认证配置；绝不生成或记录可用于登录的密码。"""
+    configured = False
+    if settings.web_password_hash:
+        configured = _is_supported_password_hash(settings.web_password_hash)
+        if not configured:
+            logger.error("WEB_PASSWORD_HASH 格式无效，Web 登录已禁用。")
+    elif settings.web_password and settings.web_allow_legacy_plaintext_password:
+        configured = bool(settings.web_password)
+        if configured:
+            logger.warning("WEB_PASSWORD 已弃用；请迁移到 WEB_PASSWORD_HASH 后删除明文密码。")
+    elif settings.web_password:
+        configured = False
+        logger.error("检测到已弃用的 WEB_PASSWORD；请迁移到 WEB_PASSWORD_HASH。")
+    if not configured:
+        logger.error("未配置 WEB_PASSWORD_HASH，Web 登录已禁用。")
     _state.web_password_initialized = True
-    return pwd
+    return configured
 
 
-def _get_web_password() -> str:
-    """获取已初始化的 Web 密码。"""
+def _web_password_is_configured() -> bool:
+    """返回 Web 密码校验器是否已初始化。"""
     if not _state.web_password_initialized:
         return _init_web_password()
-    return settings.web_password
+    return _is_supported_password_hash(settings.web_password_hash) or (
+        settings.web_allow_legacy_plaintext_password and bool(settings.web_password)
+    )
 
 
-def _hash_password(password: str) -> str:
-    """对密码做 SHA-256 哈希，避免明文参与 HMAC。"""
-    return hashlib.sha256(password.encode()).hexdigest()
+def _verify_web_password(password: str) -> bool:
+    """兼容旧明文配置，同时优先使用 scrypt 校验值。"""
+    if settings.web_password_hash:
+        return _verify_password_hash(password, settings.web_password_hash)
+    if settings.web_allow_legacy_plaintext_password and settings.web_password:
+        return hmac.compare_digest(password, settings.web_password)
+    return False
 
 
-def _make_token(password: str) -> str:
-    """使用 HMAC-SHA256 生成完整认证 token（密码 hash + 过期时间）。"""
+def _make_token() -> str:
+    """创建仅服务端可撤销的短期会话 token。"""
     expires = int(time.time()) + TOKEN_TTL
-    payload = f"{expires}"
-    pwd_hash = _hash_password(password)
+    session_id = secrets.token_urlsafe(24)
     sig = hmac.new(
         _TOKEN_SECRET.encode(),
-        f"{pwd_hash}:{payload}".encode(),
+        f"{session_id}:{expires}".encode(),
         hashlib.sha256,
     ).hexdigest()
-    return f"{expires}.{sig}"
+    _state.active_sessions[session_id] = expires
+    return f"{session_id}.{expires}.{sig}"
 
 
 def _verify_token(token: str) -> bool:
     """验证 token 是否有效（恒定时间比较）。"""
-    password = _get_web_password()
-    if not password:
+    if not _web_password_is_configured():
         return False
     try:
-        parts = token.split(".", 1)
-        expires = int(parts[0])
-        sig = parts[1]
+        session_id, expires_s, sig = token.split(".", 2)
+        expires = int(expires_s)
         if time.time() > expires:
+            _state.active_sessions.pop(session_id, None)
             return False
-        pwd_hash = _hash_password(password)
+        if _state.active_sessions.get(session_id) != expires:
+            return False
         expected = hmac.new(
             _TOKEN_SECRET.encode(),
-            f"{pwd_hash}:{expires}".encode(),
+            f"{session_id}:{expires}".encode(),
             hashlib.sha256,
         ).hexdigest()
         return hmac.compare_digest(sig, expected)
     except Exception:
         return False
+
+
+def _revoke_token(token: str) -> None:
+    """撤销当前服务进程内的会话。"""
+    session_id = token.split(".", 1)[0]
+    _state.active_sessions.pop(session_id, None)
+
+
+def _is_loopback_address(remote: str | None) -> bool:
+    try:
+        return bool(remote) and ipaddress.ip_address(remote).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_secure_transport(request: web.Request) -> bool:
+    if request.scheme == "https":
+        return True
+    if settings.web_trust_proxy_headers:
+        forwarded = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+        return forwarded == "https"
+    return False
+
+
+def _is_insecure_http_allowed(request: web.Request) -> bool:
+    if not settings.web_allow_insecure_http:
+        return False
+    if _is_loopback_address(request.remote):
+        return True
+    # Docker bridge connections are not loopback from the container's point of
+    # view. Accept them only when the browser still addressed a loopback host.
+    host = getattr(request, "host", "").split(":", 1)[0].strip("[]")
+    return _is_loopback_address(host)
 
 
 def _check_auth(request: web.Request) -> bool:
@@ -150,10 +233,6 @@ def _check_auth(request: web.Request) -> bool:
     token = request.cookies.get("auth_token", "")
     if token and _verify_token(token):
         return True
-    # Header
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer ") and _verify_token(auth[7:]):
-        return True
     return False
 
 
@@ -161,8 +240,14 @@ def _check_auth(request: web.Request) -> bool:
 async def auth_middleware(request: web.Request, handler):
     """认证中间件 — 除登录和静态页面外，所有 API 需要认证。"""
     path = request.path
-    # 放行：登录接口、健康检查、首页（会被前端 JS 检查）
-    if path in ("/api/login", "/api/status", "/ping", "/health"):
+    # 健康检查不包含管理状态，可供容器编排器访问。
+    if path in ("/ping", "/health"):
+        return await handler(request)
+    if path == "/api/login":
+        if not _is_secure_transport(request) and not _is_insecure_http_allowed(request):
+            return web.json_response(
+                {"error": "HTTPS is required for remote Web login"}, status=403
+            )
         return await handler(request)
     # 放行：GET / 和 /index.html（前端会自行检查登录状态）
     if request.method == "GET" and path in ("/", "/index.html", "/static/index.html"):
@@ -171,7 +256,12 @@ async def auth_middleware(request: web.Request, handler):
     if path.startswith("/api/"):
         if not _check_auth(request):
             return web.json_response({"error": "unauthorized"}, status=401)
-    return await handler(request)
+    response = await handler(request)
+    if _is_secure_transport(request):
+        response.headers.setdefault(
+            "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+        )
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +285,11 @@ async def api_status(request: web.Request) -> web.Response:
         "tiered_scheduling_enabled": settings.tiered_scheduling_enabled,
         "user_count": len(await get_active_users()),
     })
+
+
+async def api_health(request: web.Request) -> web.Response:
+    """公开健康检查：不泄露管理端运行状态。"""
+    return web.json_response({"ok": True})
 
 
 async def api_heartbeat(request: web.Request) -> web.Response:
@@ -231,17 +326,16 @@ async def api_login(request: web.Request) -> web.Response:
     except Exception:
         data = {}
     password = data.get("password", "")
-    web_pwd = _get_web_password()
+    if not isinstance(password, str):
+        password = ""
 
     # 使用常量时间比较防止时序攻击
-    if web_pwd and hmac.compare_digest(password, web_pwd):
+    if _web_password_is_configured() and _verify_web_password(password):
         await clear_login_rate_limit(client_ip)
-        token = _make_token(password)
-        resp = web.json_response({"ok": True, "token": token})
-        # Secure 标志按请求协议条件设置：HTTPS 下启用（防窃听），
-        # 纯 HTTP（本地/内网）下关闭，否则浏览器不会回传 cookie，认证会永久失效。
-        # SameSite=Strict 持续阻止跨站请求携带该 cookie（CSRF 防护）。
-        secure_cookie = request.scheme == "https"
+        token = _make_token()
+        # Token 只存在 HttpOnly Cookie 中，前端不再接触或持久化它。
+        resp = web.json_response({"ok": True})
+        secure_cookie = _is_secure_transport(request)
         resp.set_cookie(
             "auth_token", token,
             max_age=TOKEN_TTL,
@@ -250,6 +344,8 @@ async def api_login(request: web.Request) -> web.Response:
             samesite="Strict",
             path="/",
         )
+        if secure_cookie:
+            resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return resp
 
     # 记录失败（持久化到数据库）
@@ -261,6 +357,25 @@ async def api_login(request: web.Request) -> web.Response:
     await update_login_rate_limit(client_ip, attempts, lock_until_dt)
     logger.warning("登录失败 (IP: %s, 第 %d 次)", client_ip, attempts)
     return web.json_response({"error": "wrong password"}, status=403)
+
+
+async def api_logout(request: web.Request) -> web.Response:
+    """撤销当前会话并清除浏览器 Cookie。"""
+    token = request.cookies.get("auth_token", "")
+    if token:
+        _revoke_token(token)
+    resp = web.json_response({"ok": True})
+    resp.del_cookie("auth_token", path="/")
+    return resp
+
+
+async def _read_json_object(request: web.Request) -> dict[str, Any] | None:
+    """将恶意或格式错误的 JSON 统一转换为 400，而非未处理的 500。"""
+    try:
+        data = await request.json()
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 # ---------------------------------------------------------------------------
@@ -343,9 +458,15 @@ def _extract_steam_id(raw: str) -> str | None:
 
 
 async def api_user_add(request: web.Request) -> web.Response:
-    data = await request.json()
-    raw_input = data.get("steam_id", "").strip()
-    nickname = data.get("nickname", "").strip() or None
+    data = await _read_json_object(request)
+    if data is None:
+        return web.json_response({"error": "invalid json object"}, status=400)
+    raw_value = data.get("steam_id", "")
+    nickname_value = data.get("nickname", "")
+    if not isinstance(raw_value, str) or not isinstance(nickname_value, str):
+        return web.json_response({"error": "steam_id and nickname must be strings"}, status=400)
+    raw_input = raw_value.strip()
+    nickname = nickname_value.strip()[:128] or None
 
     steam_id = _extract_steam_id(raw_input)
 
@@ -353,7 +474,13 @@ async def api_user_add(request: web.Request) -> web.Response:
     if not steam_id and "steamdt.com" in raw_input.lower():
         dt_match = STEAMDT_URL_RE.search(raw_input)
         if dt_match:
-            from src.crawler.steamdt import resolve_steamdt_url
+            try:
+                from src.crawler.steamdt import resolve_steamdt_url
+            except ImportError:
+                return web.json_response(
+                    {"error": "SteamDT URL resolution is not enabled in this deployment"},
+                    status=400,
+                )
             resolved = await resolve_steamdt_url(raw_input)
             if resolved:
                 steam_id = resolved
@@ -379,8 +506,13 @@ async def api_users_batch(request: web.Request) -> web.Response:
       <备注>; <id/url>
       <id/url>                     （无备注）
     """
-    data = await request.json()
-    text = data.get("text", "").strip()
+    data = await _read_json_object(request)
+    if data is None:
+        return web.json_response({"error": "invalid json object"}, status=400)
+    raw_text = data.get("text", "")
+    if not isinstance(raw_text, str):
+        return web.json_response({"error": "text must be a string"}, status=400)
+    text = raw_text.strip()
     if not text:
         return web.json_response({"error": "请输入内容"}, status=400)
 
@@ -448,7 +580,9 @@ def _parse_batch_line(line: str) -> tuple[str | None, str | None]:
 
 async def api_user_update(request: web.Request) -> web.Response:
     steam_id = request.match_info["steam_id"]
-    data = await request.json()
+    data = await _read_json_object(request)
+    if data is None:
+        return web.json_response({"error": "invalid json object"}, status=400)
     from sqlalchemy import select
     async with async_session_factory() as session:
         result = await session.execute(select(MonitoredUser).where(MonitoredUser.steam_id == steam_id))
@@ -456,7 +590,10 @@ async def api_user_update(request: web.Request) -> web.Response:
         if not user:
             return web.json_response({"error": "not found"}, status=404)
         if "nickname" in data:
-            user.nickname = data["nickname"] or None
+            nickname = data["nickname"]
+            if nickname is not None and not isinstance(nickname, str):
+                return web.json_response({"error": "nickname must be a string"}, status=400)
+            user.nickname = nickname.strip()[:128] if nickname else None
         if "is_active" in data:
             val = data["is_active"]
             # 兼容 JSON 布尔与字符串（"true"/"1" 等），避免 "false" 被 bool() 误判为 True
@@ -617,8 +754,18 @@ async def api_compare(request: web.Request) -> web.Response:
 
     from sqlalchemy import select
     async with async_session_factory() as session:
-        result_a = await session.execute(select(SnapshotArchive).where(SnapshotArchive.id == id_a))
-        result_b = await session.execute(select(SnapshotArchive).where(SnapshotArchive.id == id_b))
+        result_a = await session.execute(
+            select(SnapshotArchive).where(
+                SnapshotArchive.id == id_a,
+                SnapshotArchive.steam_id == steam_id,
+            )
+        )
+        result_b = await session.execute(
+            select(SnapshotArchive).where(
+                SnapshotArchive.id == id_b,
+                SnapshotArchive.steam_id == steam_id,
+            )
+        )
         snap_a = result_a.scalar_one_or_none()
         snap_b = result_b.scalar_one_or_none()
 
@@ -686,9 +833,12 @@ async def ws_broadcast(event_type: str, data: dict) -> None:
 
 
 async def api_monitor_start(request: web.Request) -> web.Response:
-    if _state.monitor_running:
-        return web.json_response({"ok": True, "msg": "already running"})
-    _state.monitor_task = asyncio.create_task(_monitor_loop())
+    async with _state.monitor_start_lock:
+        if _state.monitor_task and not _state.monitor_task.done():
+            return web.json_response({"ok": True, "msg": "already running"})
+        # 在创建任务前设置状态，避免两个并发请求同时通过检查。
+        _state.monitor_running = True
+        _state.monitor_task = asyncio.create_task(_monitor_loop())
     return web.json_response({"ok": True, "msg": "started"})
 
 
@@ -745,7 +895,9 @@ async def api_schedule(request: web.Request) -> web.Response:
 
 async def api_schedule_update(request: web.Request) -> web.Response:
     """更新归档调度设置并热更新调度器。"""
-    data = await request.json()
+    data = await _read_json_object(request)
+    if data is None:
+        return web.json_response({"error": "invalid json object"}, status=400)
 
     hour = data.get("snapshot_hour")
     interval = data.get("snapshot_interval_hours")
@@ -1003,12 +1155,11 @@ async def api_frequency_set_user(request: web.Request) -> web.Response:
     返回: {"ok": true, "steam_id": "...", "frequency": "high"}
     """
     steam_id = request.match_info["steam_id"]
-    try:
-        data = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid json"}, status=400)
+    data = await _read_json_object(request)
+    if data is None:
+        return web.json_response({"error": "invalid json object"}, status=400)
 
-    frequency = data.get("frequency", "").strip().lower()
+    frequency = str(data.get("frequency", "")).strip().lower()
     if frequency not in ("high", "medium", "low"):
         return web.json_response(
             {"error": f"无效的频率层级: '{frequency}'，支持 high / medium / low"},
@@ -1031,10 +1182,9 @@ async def api_frequency_set_batch(request: web.Request) -> web.Response:
     Body: {"users": {"7656119...": "high", "7656119...": "low"}}
     返回: {"ok": true, "updated": 2, "failed": 0}
     """
-    try:
-        data = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid json"}, status=400)
+    data = await _read_json_object(request)
+    if data is None:
+        return web.json_response({"error": "invalid json object"}, status=400)
 
     users = data.get("users", {})
     if not isinstance(users, dict):
@@ -1071,7 +1221,8 @@ async def api_frequency_set_batch(request: web.Request) -> web.Response:
 # 数据导出 / 导入 API
 # ---------------------------------------------------------------------------
 
-SAVES_DIR = (Path(__file__).parent.parent.parent / "saves").resolve()
+# 导出属于运行时数据，放在可写的数据卷内以支持只读根文件系统。
+SAVES_DIR = (Path(__file__).parent.parent.parent / "data" / "saves").resolve()
 
 
 async def api_export(request: web.Request) -> web.Response:
@@ -1079,9 +1230,11 @@ async def api_export(request: web.Request) -> web.Response:
     from src.db.repository import export_all_data
     try:
         data = await export_all_data()
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=413)
     except Exception as e:
         logger.exception("导出数据失败")
-        return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"error": "export failed"}, status=500)
 
     SAVES_DIR.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -1095,7 +1248,6 @@ async def api_export(request: web.Request) -> web.Response:
     return web.json_response({
         "ok": True,
         "filename": filename,
-        "filepath": str(filepath),
         "user_count": data.get("user_count", 0),
     })
 
@@ -1128,29 +1280,38 @@ async def api_export_download(request: web.Request) -> web.Response:
 
 async def api_import(request: web.Request) -> web.Response:
     """接收 .cs2mon 文件并导入数据。"""
-    reader = await request.multipart()
-    field = await reader.next()
+    try:
+        reader = await request.multipart()
+        field = await reader.next()
+    except Exception:
+        return web.json_response({"error": "invalid multipart upload"}, status=400)
     if field is None:
         return web.json_response({"error": "no file uploaded"}, status=400)
 
-    raw = await field.read()
+    chunks: list[bytes] = []
+    total_size = 0
+    while True:
+        chunk = await field.read_chunk(size=64 * 1024)
+        if not chunk:
+            break
+        total_size += len(chunk)
+        if total_size > settings.web_max_upload_bytes:
+            return web.json_response({"error": "uploaded file is too large"}, status=413)
+        chunks.append(chunk)
     try:
-        text = raw.decode("utf-8")
+        text = b"".join(chunks).decode("utf-8")
         data = json.loads(text)
     except (UnicodeDecodeError, json.JSONDecodeError) as e:
         return web.json_response({"error": f"文件格式错误: {e}"}, status=400)
-
-    if data.get("app") != "steam-cs2-inventory-monitor":
-        return web.json_response({"error": "不是有效的 CS2 监控器导出文件"}, status=400)
 
     from src.db.repository import import_all_data
     try:
         stats = await import_all_data(data)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
-    except Exception as e:
+    except Exception:
         logger.exception("导入数据失败")
-        return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"error": "import failed"}, status=500)
 
     logger.info("数据导入完成: 新建 %d, 更新 %d, 跳过 %d",
                 stats["created"], stats["updated"], stats["skipped"])
@@ -1222,6 +1383,7 @@ def create_web_app() -> web.Application:
     # API 路由
     app.router.add_get("/api/status", api_status)
     app.router.add_post("/api/login", api_login)
+    app.router.add_post("/api/logout", api_logout)
     app.router.add_post("/api/heartbeat", api_heartbeat)
     app.router.add_get("/api/users", api_users_list)
     app.router.add_post("/api/users", api_user_add)
@@ -1243,7 +1405,7 @@ def create_web_app() -> web.Application:
     app.router.add_put("/api/schedule", api_schedule_update)
     app.router.add_get("/api/ws", api_ws)
     app.router.add_get("/ping", api_heartbeat)
-    app.router.add_get("/health", api_status)
+    app.router.add_get("/health", api_health)
     # 分层调度 API
     app.router.add_get("/api/frequency/status", api_frequency_status)
     app.router.add_post("/api/users/{steam_id}/frequency", api_frequency_set_user)

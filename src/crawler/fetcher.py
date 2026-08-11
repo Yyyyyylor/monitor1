@@ -192,6 +192,9 @@ async def fetch_inventory_paginated(steam_id: str) -> dict[str, Any] | None:
     total_count = 0
 
     while more_pages:
+        if page_count >= settings.max_inventory_pages:
+            logger.warning("库存分页超过上限 %d，拒绝使用不完整结果", settings.max_inventory_pages)
+            return None
         try:
             data = await _fetch_page(client, steam_id, proxy_cfg, start_assetid)
         except (httpx.TimeoutException, httpx.ConnectError, httpx.RemoteProtocolError) as exc:
@@ -214,6 +217,9 @@ async def fetch_inventory_paginated(steam_id: str) -> dict[str, Any] | None:
                 seen_asset_ids.add(aid)
                 new_assets.append(a)
         all_assets.extend(new_assets)
+        if len(all_assets) > settings.max_inventory_items:
+            logger.warning("库存物品数超过上限 %d，拒绝使用不完整结果", settings.max_inventory_items)
+            return None
 
         for d in descriptions:
             key = f"{d.get('classid', '')}_{d.get('instanceid', '')}"
@@ -232,7 +238,10 @@ async def fetch_inventory_paginated(steam_id: str) -> dict[str, Any] | None:
         if not has_more and last_assetid and total_count > len(all_assets):
             has_more = True
 
-        if has_more and last_assetid:
+        if has_more:
+            if not last_assetid or last_assetid == start_assetid:
+                logger.warning("分页响应缺少或重复 last_assetid，拒绝使用不完整结果")
+                return None
             start_assetid = last_assetid
             await asyncio.sleep(settings.request_delay_seconds)
         else:

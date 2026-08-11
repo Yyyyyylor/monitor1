@@ -106,6 +106,17 @@ class _AlwaysFailClient:
         raise httpx.TransportError("boom")
 
 
+class _StatusClient:
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+        self.attempts = 0
+
+    async def post(self, url, json=None, timeout=10):
+        self.attempts += 1
+        request = httpx.Request("POST", url)
+        return httpx.Response(self.status_code, request=request)
+
+
 class TestPostJsonWithRetry:
     async def test_retries_then_succeeds(self, mocker) -> None:
         mocker.patch("src.notifications._http.asyncio.sleep", new=mocker.AsyncMock())
@@ -120,3 +131,12 @@ class TestPostJsonWithRetry:
         await post_json_with_retry(client, "http://example.com/x", {}, label="测试")
         assert client.attempts == 3
 
+    async def test_retries_server_error_but_not_invalid_request(self, mocker) -> None:
+        mocker.patch("src.notifications._http.asyncio.sleep", new=mocker.AsyncMock())
+        server_error = _StatusClient(503)
+        await post_json_with_retry(server_error, "http://example.com/x", {}, label="测试")
+        assert server_error.attempts == 3
+
+        invalid_request = _StatusClient(400)
+        await post_json_with_retry(invalid_request, "http://example.com/x", {}, label="测试")
+        assert invalid_request.attempts == 1

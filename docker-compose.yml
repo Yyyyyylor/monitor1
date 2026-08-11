@@ -9,8 +9,11 @@ services:
       # 容器内必须监听 0.0.0.0，宿主机的端口映射才能生效
       # （应用默认配置已改为安全的 127.0.0.1）
       - HEALTH_SERVER_HOST=0.0.0.0
+      # 端口仅绑定宿主机回环地址时允许本地 HTTP；公网部署请删除此项并使用 HTTPS 代理。
+      - WEB_ALLOW_INSECURE_HTTP=true
     ports:
-      - "8080:8080"
+      # 默认仅发布到宿主机回环地址；公网访问请放在 HTTPS 反向代理之后。
+      - "127.0.0.1:8080:8080"
     volumes:
       - ./data:/app/data
       - ./.env:/app/.env:ro
@@ -19,3 +22,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
