@@ -3,7 +3,7 @@ cd /d "%~dp0"
 title Steam CS2 Monitor - Install
 echo.
 echo ============================================
-echo   Steam CS2 Inventory Monitor v2.4.0 - Install
+echo   Steam CS2 Inventory Monitor v2.4.1 - Install
 echo ============================================
 echo.
 

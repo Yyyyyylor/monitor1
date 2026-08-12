@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-title Steam CS2 Inventory Monitor v2.4.0
+title Steam CS2 Inventory Monitor v2.4.1
 
 if not exist "venv\Scripts\python.exe" (
     echo [ERROR] Not installed. Run install.bat first.
@@ -14,7 +14,7 @@ if not exist ".env" (
 )
 
 echo.
-echo   Steam CS2 Inventory Monitor v2.4.0
+echo   Steam CS2 Inventory Monitor v2.4.1
 echo   Browser will open. Ctrl+C to stop.
 echo.
 call venv\Scripts\python run_web.py
