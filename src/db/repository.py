@@ -10,7 +10,7 @@ import zlib
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select, update
 
 from src.config import settings
 from src.db.database import async_session_factory
@@ -187,12 +187,17 @@ async def record_failure(steam_id: str, error_msg: str) -> int:
 async def reset_failure_count(steam_id: str) -> None:
     async with async_session_factory() as session:
         result = await session.execute(
-            select(MonitoredUser).where(MonitoredUser.steam_id == steam_id)
+            update(MonitoredUser)
+            .where(
+                MonitoredUser.steam_id == steam_id,
+                or_(
+                    MonitoredUser.consecutive_fails != 0,
+                    MonitoredUser.last_error_msg.is_not(None),
+                ),
+            )
+            .values(consecutive_fails=0, last_error_msg=None)
         )
-        user = result.scalar_one_or_none()
-        if user:
-            user.consecutive_fails = 0
-            user.last_error_msg = None
+        if result.rowcount:
             await session.commit()
 
 
@@ -715,15 +720,48 @@ async def import_all_data(data: dict[str, Any]) -> dict[str, int]:
 
     async with async_session_factory() as session:
         async with session.begin():
+            steam_ids = [entry["steam_id"] for entry in users_list]
+            existing_users = await session.execute(
+                select(MonitoredUser).where(MonitoredUser.steam_id.in_(steam_ids))
+            )
+            users_by_id = {user.steam_id: user for user in existing_users.scalars()}
+
+            existing_inventories = await session.execute(
+                select(CurrentInventoryState).where(CurrentInventoryState.steam_id.in_(steam_ids))
+            )
+            inventories_by_id = {
+                inventory.steam_id: inventory for inventory in existing_inventories.scalars()
+            }
+
+            existing_changes = await session.execute(
+                select(InventoryChange).where(InventoryChange.steam_id.in_(steam_ids))
+            )
+            change_keys_by_id: dict[str, set[tuple[str, str, str | None, str]]] = {}
+            for row in existing_changes.scalars():
+                change_time = row.change_time
+                if change_time.tzinfo is None:
+                    change_time = change_time.replace(tzinfo=timezone.utc)
+                change_keys_by_id.setdefault(row.steam_id, set()).add(
+                    _event_key(row.change_type, row.asset_id, row.old_asset_id, change_time)
+                )
+
+            existing_archives = await session.execute(
+                select(SnapshotArchive.steam_id, SnapshotArchive.captured_at)
+                .where(SnapshotArchive.steam_id.in_(steam_ids))
+            )
+            archive_times_by_id: dict[str, set[datetime]] = {}
+            for existing_sid, captured_at in existing_archives:
+                if captured_at.tzinfo is None:
+                    captured_at = captured_at.replace(tzinfo=timezone.utc)
+                archive_times_by_id.setdefault(existing_sid, set()).add(captured_at)
+
             for entry in users_list:
                 sid = entry["steam_id"]
-                result = await session.execute(
-                    select(MonitoredUser).where(MonitoredUser.steam_id == sid)
-                )
-                user = result.scalar_one_or_none()
+                user = users_by_id.get(sid)
                 if user is None:
                     user = MonitoredUser(steam_id=sid)
                     session.add(user)
+                    users_by_id[sid] = user
                     stats["created"] += 1
                 else:
                     stats["updated"] += 1
@@ -734,18 +772,17 @@ async def import_all_data(data: dict[str, Any]) -> dict[str, int]:
 
                 inventory = entry.get("current_inventory")
                 if inventory is not None:
-                    existing_inv = await session.execute(
-                        select(CurrentInventoryState).where(CurrentInventoryState.steam_id == sid)
-                    )
-                    record = existing_inv.scalar_one_or_none()
+                    record = inventories_by_id.get(sid)
                     items_json = _compress(inventory["items"])
                     if record is None:
-                        session.add(CurrentInventoryState(
+                        record = CurrentInventoryState(
                             steam_id=sid,
                             snapshot_data=items_json,
                             item_count=int(inventory.get("item_count", len(inventory["items"]))),
                             api_total_count=int(inventory.get("api_total_count", 0)),
-                        ))
+                        )
+                        session.add(record)
+                        inventories_by_id[sid] = record
                     else:
                         record.snapshot_data = items_json
                         record.item_count = int(inventory.get("item_count", len(inventory["items"])))
@@ -753,18 +790,7 @@ async def import_all_data(data: dict[str, Any]) -> dict[str, int]:
                         record.updated_at = datetime.now(timezone.utc)
                     invalidated_ids.add(sid)
 
-                existing_changes = await session.execute(
-                    select(InventoryChange).where(InventoryChange.steam_id == sid)
-                )
-                change_keys = {
-                    _event_key(
-                        row.change_type,
-                        row.asset_id,
-                        row.old_asset_id,
-                        row.change_time.replace(tzinfo=timezone.utc) if row.change_time.tzinfo is None else row.change_time,
-                    )
-                    for row in existing_changes.scalars().all()
-                }
+                change_keys = change_keys_by_id.setdefault(sid, set())
                 for change in entry.get("recent_changes", []):
                     change_type = ChangeType(change["change_type"])
                     change_time = _parse_import_datetime(change["change_time"], "change_time")
@@ -786,13 +812,7 @@ async def import_all_data(data: dict[str, Any]) -> dict[str, int]:
                     ))
                     change_keys.add(key)
 
-                existing_archives = await session.execute(
-                    select(SnapshotArchive.captured_at).where(SnapshotArchive.steam_id == sid)
-                )
-                archive_times = {
-                    value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-                    for value in existing_archives.scalars().all()
-                }
+                archive_times = archive_times_by_id.setdefault(sid, set())
                 for archive in entry.get("archives", []):
                     captured_at = _parse_import_datetime(archive["captured_at"], "captured_at")
                     if captured_at in archive_times:

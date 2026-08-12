@@ -128,28 +128,51 @@ async def _do_monitor_users(
     # 并发与抖动参数（钳制到合理区间，防止配置越界）
     concurrency = max(1, min(int(settings.fetch_concurrency), 8))
     jitter_max = max(0.0, float(settings.fetch_jitter_seconds))
-    sem = asyncio.Semaphore(concurrency)
     logger.info("本轮抓取: %d 个用户, 并发 %d, 抖动上限 %.1fs",
                 len(users), concurrency, jitter_max)
 
     results: list[dict[str, Any]] = []
+    user_queue: asyncio.Queue[Any | None] = asyncio.Queue()
+    for user in users:
+        user_queue.put_nowait(user)
 
-    async def _run_one(user: Any) -> None:
-        # 每用户随机抖动，打散请求起始时间，避免对齐 Steam 限流窗口
-        if jitter_max > 0:
-            await asyncio.sleep(random.uniform(0, jitter_max))
-        async with sem:
-            result = await _process_one_user(user)
-        results.append(result)
-        if on_user_done:
+    async def _run_worker() -> None:
+        while True:
+            user = await user_queue.get()
+            if user is None:
+                user_queue.task_done()
+                return
             try:
-                await on_user_done(result)
-            except Exception:
-                pass
+        # 每用户随机抖动，打散请求起始时间，避免对齐 Steam 限流窗口
+                if jitter_max > 0:
+                    await asyncio.sleep(random.uniform(0, jitter_max))
+                result = await _process_one_user(user)
+                results.append(result)
+                if on_user_done:
+                    try:
+                        await on_user_done(result)
+                    except Exception:
+                        # 回调（例如 WebSocket 推送）不应影响抓取结果，但必须可排查。
+                        logger.warning("用户 %s 完成回调失败", result["steam_id"], exc_info=True)
+            finally:
+                user_queue.task_done()
 
-    tasks = [asyncio.create_task(_run_one(u)) for u in users]
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    worker_count = min(concurrency, len(users))
+    workers = [asyncio.create_task(_run_worker()) for _ in range(worker_count)]
+    try:
+        await user_queue.join()
+        for _ in workers:
+            user_queue.put_nowait(None)
+        await asyncio.gather(*workers)
+    finally:
+        # ``Queue.join()`` does not own the worker tasks.  If the monitor is
+        # cancelled while it is waiting, make sure no worker survives to use
+        # the database or HTTP client after the application has closed them.
+        pending_workers = [worker for worker in workers if not worker.done()]
+        for worker in pending_workers:
+            worker.cancel()
+        if pending_workers:
+            await asyncio.gather(*pending_workers, return_exceptions=True)
 
     for result in results:
         if result["ok"]:

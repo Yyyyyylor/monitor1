@@ -119,6 +119,26 @@ def test_frontend_keeps_session_token_out_of_local_storage() -> None:
     assert "asset_id: ${esc(item.asset_id)}" in content
 
 
+def test_frontend_refreshes_are_coalesced_and_view_requests_are_guarded() -> None:
+    content = (Path(__file__).parents[1] / "src" / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    assert "refreshStatusInFlight" in content
+    assert "loadUsersInFlight" in content
+    assert "beginViewRequest()" in content
+    assert "viewAbortController?.abort()" in content
+    assert "Promise.all([loadUsers(), loadInventory(sid)])" in content
+    assert "Promise.all([\n      api('GET', '/api/users'" in content
+    assert "startLiveUpdates()" in content
+    assert "stopLiveUpdates()" in content
+
+
+def test_frontend_api_rejects_non_json_and_error_responses() -> None:
+    content = (Path(__file__).parents[1] / "src" / "web" / "static" / "index.html").read_text(encoding="utf-8")
+    assert "const responseText = await r.text();" in content
+    assert "throw new ApiError" in content
+    assert "if (!r.ok)" in content
+    assert "showViewError" in content
+
+
 def test_inventory_images_use_bounded_viewport_aware_preloading() -> None:
     content = (Path(__file__).parents[1] / "src" / "web" / "static" / "index.html").read_text(encoding="utf-8")
     assert '<link rel="preconnect" href="https://steamcommunity-a.akamaihd.net">' in content

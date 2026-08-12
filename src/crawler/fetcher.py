@@ -112,8 +112,7 @@ async def _fetch_page(
             )
 
             if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After", "60")
-                wait = int(retry_after) if str(retry_after).isdigit() else 60
+                wait = _retry_after_seconds(response.headers.get("Retry-After"))
                 logger.warning("Steam API 返回 429 (限流)，等待 %ds 后重试 (attempt %d/%d)",
                                wait, attempt + 1, settings.max_retries + 1)
                 if attempt < settings.max_retries:
@@ -161,6 +160,19 @@ async def _fetch_page(
             raise
 
     return None
+
+
+def _retry_after_seconds(value: str | None) -> int:
+    """Parse Steam's delta-seconds Retry-After header with a safe upper bound."""
+    default_wait = 60
+    try:
+        requested = int(value) if value is not None and value.isdigit() else default_wait
+    except (TypeError, ValueError):
+        requested = default_wait
+    # A zero/negative configuration must not turn a rate-limit response into
+    # a busy retry loop; retain at least one second of backoff.
+    configured_max = max(1, int(settings.steam_retry_after_max_seconds))
+    return min(max(0, requested), configured_max)
 
 
 async def fetch_inventory_paginated(steam_id: str) -> dict[str, Any] | None:

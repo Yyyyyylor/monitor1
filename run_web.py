@@ -27,7 +27,7 @@ async def main() -> None:
 
     # 启动 Web 服务（内含数据库初始化 + APScheduler）
     from src.web.app import start_web_server
-    await start_web_server()
+    runner = await start_web_server()
 
     port = settings.health_server_port
     logger.info("请在浏览器打开: http://localhost:{port}", port=port)
@@ -50,12 +50,11 @@ async def main() -> None:
         await stop_event.wait()
     except KeyboardInterrupt:
         pass
-
-    from src.db.database import close_db
-    from src.crawler.fetcher import close_client
-    await close_db()
-    await close_client()
-    logger.info("已安全关闭")
+    finally:
+        # runner.cleanup() 触发 aiohttp 的 on_cleanup：统一停止监控任务、
+        # 调度器、WebSocket、数据库和共享 HTTP 客户端，避免重复关闭。
+        await runner.cleanup()
+        logger.info("已安全关闭")
 
 
 if __name__ == "__main__":

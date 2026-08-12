@@ -20,7 +20,7 @@ from typing import Any
 from aiohttp import web
 
 from src.config import settings
-from src.db.database import async_session_factory, init_db
+from src.db.database import async_session_factory, close_db, init_db
 from src.db.models import CurrentInventoryState, MonitoredUser, SnapshotArchive
 from src.db.repository import (
     get_active_users,
@@ -68,6 +68,8 @@ class WebState:
     ws_clients: set[web.WebSocketResponse] = field(default_factory=set)
     ws_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     scheduler_ref: Any = None
+    maintenance_task: asyncio.Task | None = None
+    maintenance_enabled: bool = False
     heartbeat_event: asyncio.Event = field(default_factory=asyncio.Event)
     # 分层调度状态
     tier_tasks: dict[str, asyncio.Task | None] = field(default_factory=lambda: {"high": None, "medium": None, "low": None})
@@ -819,17 +821,25 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
 
 async def ws_broadcast(event_type: str, data: dict) -> None:
     """向所有 WebSocket 客户端广播消息（线程安全）。"""
-    if not _state.ws_clients:
-        return
     message = json.dumps({"type": event_type, "data": data}, default=str)
     async with _state.ws_lock:
-        dead = set()
-        for ws in _state.ws_clients:
-            try:
-                await ws.send_str(message)
-            except Exception:
-                dead.add(ws)
-        _state.ws_clients -= dead
+        targets = tuple(ws for ws in _state.ws_clients if not ws.closed)
+        already_closed = set(_state.ws_clients).difference(targets)
+    if not targets:
+        if already_closed:
+            async with _state.ws_lock:
+                _state.ws_clients.difference_update(already_closed)
+        return
+    outcomes = await asyncio.gather(
+        *(ws.send_str(message) for ws in targets),
+        return_exceptions=True,
+    )
+    dead = already_closed | {
+        ws for ws, outcome in zip(targets, outcomes) if isinstance(outcome, Exception) or ws.closed
+    }
+    if dead:
+        async with _state.ws_lock:
+            _state.ws_clients.difference_update(dead)
 
 
 async def api_monitor_start(request: web.Request) -> web.Response:
@@ -991,12 +1001,22 @@ def _update_scheduler_jobs() -> None:
 
 async def _run_maintenance() -> None:
     """执行快照归档 + 清理过期数据。"""
+    # APScheduler's ``shutdown(wait=False)`` stops future scheduling but does
+    # not wait for a coroutine it has already submitted.  The gate also makes
+    # a task queued immediately before shutdown harmless.
+    if not _state.maintenance_enabled:
+        return
+    task = asyncio.current_task()
+    _state.maintenance_task = task
     try:
         from src.scheduler.monitor import compact_maintenance
         await compact_maintenance()
         logger.info("定时归档完成")
     except Exception as e:
         logger.exception("定时归档异常: %s", e)
+    finally:
+        if _state.maintenance_task is task:
+            _state.maintenance_task = None
 
 
 # ---------------------------------------------------------------------------
@@ -1426,47 +1446,104 @@ def create_web_app() -> web.Application:
         _init_web_password()
         logger.info("Web 服务启动，数据库已初始化")
 
+    cleanup_complete = False
+
+    async def on_cleanup(app_: web.Application) -> None:
+        """Release background tasks and shared clients on every aiohttp shutdown path."""
+        nonlocal cleanup_complete
+        if cleanup_complete:
+            return
+        cleanup_complete = True
+        _state.monitor_running = False
+        _state.heartbeat_event.set()
+        for event in _state.tier_events.values():
+            event.set()
+
+        tasks = [
+            task for task in [_state.monitor_task, *_state.tier_tasks.values()]
+            if task is not None and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        _state.monitor_task = None
+        _state.tier_tasks = {"high": None, "medium": None, "low": None}
+
+        _state.maintenance_enabled = False
+        scheduler = _state.scheduler_ref
+        if scheduler is not None:
+            try:
+                scheduler.shutdown(wait=False)
+            except Exception:
+                logger.warning("关闭归档调度器失败", exc_info=True)
+            finally:
+                _state.scheduler_ref = None
+
+        maintenance_task = _state.maintenance_task
+        if maintenance_task is not None and not maintenance_task.done():
+            maintenance_task.cancel()
+            await asyncio.gather(maintenance_task, return_exceptions=True)
+        _state.maintenance_task = None
+
+        async with _state.ws_lock:
+            clients = tuple(_state.ws_clients)
+            _state.ws_clients.clear()
+        if clients:
+            await asyncio.gather(*(ws.close() for ws in clients), return_exceptions=True)
+
+        from src.crawler.fetcher import close_client
+        await close_client()
+        await close_db()
+        logger.info("Web 服务资源已清理")
+
     app.on_startup.append(on_startup)
+    app.on_cleanup.append(on_cleanup)
     return app
 
 
-async def start_web_server() -> None:
+async def start_web_server() -> web.AppRunner:
     """启动 Web 服务器 + APScheduler 归档调度（非阻塞）。"""
     app = create_web_app()
     runner = web.AppRunner(app)
-    await runner.setup()
+    try:
+        await runner.setup()
 
-    host = settings.health_server_host
-    port = settings.health_server_port
+        host = settings.health_server_host
+        port = settings.health_server_port
 
-    # 尝试绑定端口，冲突时自动递增
-    bound = False
-    for attempt in range(5):
-        try:
-            site = web.TCPSite(runner, host, port + attempt)
-            await site.start()
-            if attempt > 0:
-                logger.warning("端口 %d 被占用，已切换到 %d", port, port + attempt)
-                settings.health_server_port = port + attempt
-            logger.info("Web 仪表盘已启动: http://%s:%d", host, port + attempt)
-            bound = True
-            break
-        except OSError as e:
-            if "10048" in str(e) or "address already in use" in str(e).lower():
-                logger.warning("端口 %d 已被占用，尝试 %d...", port + attempt, port + attempt + 1)
-                continue
-            raise
+        # 尝试绑定端口，冲突时自动递增
+        bound = False
+        for attempt in range(5):
+            try:
+                site = web.TCPSite(runner, host, port + attempt)
+                await site.start()
+                if attempt > 0:
+                    logger.warning("端口 %d 被占用，已切换到 %d", port, port + attempt)
+                    settings.health_server_port = port + attempt
+                logger.info("Web 仪表盘已启动: http://%s:%d", host, port + attempt)
+                bound = True
+                break
+            except OSError as e:
+                if "10048" in str(e) or "address already in use" in str(e).lower():
+                    logger.warning("端口 %d 已被占用，尝试 %d...", port + attempt, port + attempt + 1)
+                    continue
+                raise
 
-    if not bound:
-        logger.error("无法绑定端口（尝试了 %d-%d），请关闭占用端口的程序", port, port + 4)
-        raise SystemExit(1)
+        if not bound:
+            logger.error("无法绑定端口（尝试了 %d-%d），请关闭占用端口的程序", port, port + 4)
+            raise SystemExit(1)
 
-    # 启动 APScheduler 归档调度
-    from apscheduler.schedulers.asyncio import AsyncIOScheduler
-    sched = AsyncIOScheduler()
-    _state.scheduler_ref = sched
+        # 启动 APScheduler 归档调度
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        sched = AsyncIOScheduler()
+        _state.scheduler_ref = sched
 
-    _update_scheduler_jobs_internal(sched)
-
-    sched.start()
-    logger.info("归档调度已启动")
+        _update_scheduler_jobs_internal(sched)
+        _state.maintenance_enabled = True
+        sched.start()
+        logger.info("归档调度已启动")
+        return runner
+    except BaseException:
+        await runner.cleanup()
+        raise

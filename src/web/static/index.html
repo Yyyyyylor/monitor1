@@ -338,6 +338,10 @@ body::before { content: ""; position: fixed; inset: 0; pointer-events: none; opa
 const API = '';
 let currentSteamId = null, editingSteamId = null, pollTimer = null, heartbeatTimer = null, wsConn = null;
 let currentInventory = null, activeCategory = 'all', displayMode = 'stacked';
+let wsReconnectTimer = null, liveUpdatesActive = false;
+let refreshStatusInFlight = null, refreshStatusQueued = false;
+let loadUsersInFlight = null, loadUsersQueued = false;
+let viewRequestVersion = 0, viewAbortController = null;
 
 // Steam CDN images are network-bound.  Keep a small, predictable request queue so
 // the first visible cards load first without starting hundreds of image fetches at once.
@@ -432,14 +436,41 @@ function prepareInventoryImageLoading() {
 }
 
 // --- API (带认证) ---
-async function api(method, path, body) {
-  const opts = { method, headers: { 'Content-Type': 'application/json' } };
+class ApiError extends Error {
+  constructor(message, status = 0) { super(message); this.name = 'ApiError'; this.status = status; }
+}
+
+async function api(method, path, body, requestOptions = {}) {
+  const opts = { method, headers: { 'Content-Type': 'application/json' }, signal: requestOptions.signal };
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(API + path, opts);
-  if (r.status === 401) { showLogin(); throw new Error('unauthorized'); }
-  return r.json();
+  const responseText = await r.text();
+  if (r.status === 401) { showLogin(); throw new ApiError('unauthorized', 401); }
+  let data = null;
+  if (responseText) {
+    try { data = JSON.parse(responseText); }
+    catch { throw new ApiError(`服务器返回了无法识别的响应（HTTP ${r.status}）`, r.status); }
+  }
+  if (!r.ok) throw new ApiError(data?.error || `请求失败（HTTP ${r.status}）`, r.status);
+  if (data === null) throw new ApiError('服务器返回了空响应', r.status);
+  return data;
 }
 function toast(msg) { const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg; document.body.appendChild(el); setTimeout(() => el.remove(), 3000); }
+
+function isAbortError(error) { return error?.name === 'AbortError'; }
+function beginViewRequest() {
+  viewRequestVersion += 1;
+  viewAbortController?.abort();
+  viewAbortController = new AbortController();
+  return { version: viewRequestVersion, controller: viewAbortController };
+}
+function isCurrentView(request) {
+  return request.version === viewRequestVersion && !request.controller.signal.aborted;
+}
+function showViewError(container, error, retryAction) {
+  const message = error?.message && error.message !== 'unauthorized' ? error.message : '加载失败，请检查网络后重试';
+  container.innerHTML = `<div class="empty"><div class="icon">⚠️</div><p>${esc(message)}</p><button class="btn btn-primary" onclick="${retryAction}">重试</button></div>`;
+}
 
 // --- Login ---
 async function doLogin() {
@@ -459,7 +490,7 @@ async function doLogin() {
 }
 function showLogin() {
   document.getElementById('loginOverlay').style.display = '';
-  if (pollTimer) clearInterval(pollTimer);
+  stopLiveUpdates();
 }
 async function checkAuth() {
   try { const r = await fetch(API + '/api/users'); return r.status !== 401; } catch { return false; }
@@ -467,6 +498,7 @@ async function checkAuth() {
 
 // --- WebSocket ---
 function connectWS() {
+  if (!liveUpdatesActive) return;
   if (wsConn && (wsConn.readyState === WebSocket.OPEN || wsConn.readyState === WebSocket.CONNECTING)) return;
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   wsConn = new WebSocket(`${proto}//${location.host}/api/ws`);
@@ -479,36 +511,71 @@ function connectWS() {
         const icon = d.ok ? '✅' : '❌';
         const detail = d.ok ? (d.events > 0 ? `· ${d.events}个变化` : '· 无变化') : `· ${d.msg}`;
         toast(`${icon} ${d.nickname || d.steam_id} ${detail}`);
-        loadUsers();
-        if (currentSteamId === d.steam_id) loadInventory(d.steam_id);
+        loadUsers().catch(() => {});
+        if (currentSteamId === d.steam_id) loadInventory(d.steam_id).catch(() => {});
       }
       if (msg.type === 'update') {
-        refreshStatus();
-        loadUsers();
+        refreshStatus().catch(() => {});
+        loadUsers().catch(() => {});
       }
     } catch {}
   };
-  wsConn.onclose = () => { wsConn = null; setTimeout(connectWS, 5000); };
+  wsConn.onclose = () => {
+    wsConn = null;
+    if (!liveUpdatesActive || wsReconnectTimer) return;
+    wsReconnectTimer = setTimeout(() => { wsReconnectTimer = null; connectWS(); }, 5000);
+  };
 }
 
 // --- Heartbeat ---
 function startHeartbeat() { if (heartbeatTimer) return; heartbeatTimer = setInterval(() => fetch(API+'/api/heartbeat',{method:'POST'}).catch(()=>{}), 5000); }
+function stopLiveUpdates() {
+  liveUpdatesActive = false;
+  if (pollTimer) clearInterval(pollTimer);
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+  pollTimer = null; heartbeatTimer = null; wsReconnectTimer = null;
+  if (wsConn) { wsConn.onclose = null; wsConn.close(); wsConn = null; }
+}
+function startLiveUpdates() {
+  liveUpdatesActive = true;
+  startHeartbeat();
+  connectWS();
+  if (!pollTimer) pollTimer = setInterval(() => {
+    refreshStatus().catch(() => {});
+    loadUsers().catch(() => {});
+  }, 30000);
+}
 window.addEventListener('beforeunload', () => navigator.sendBeacon(API + '/api/heartbeat'));
 
 // --- Status ---
 async function refreshStatus() {
-  const s = await api('GET', '/api/status');
-  const dot = document.getElementById('statusDot'), txt = document.getElementById('statusText'), btn = document.getElementById('btnToggleMonitor');
-  if (s.monitor_running) { dot.className='status-dot on'; txt.textContent=`运行中 · ${s.last_run_time?'上次: '+new Date(s.last_run_time).toLocaleTimeString():'等待首次运行'}`; btn.textContent='停止监控'; btn.className='btn btn-sm btn-danger'; }
-  else { dot.className='status-dot off'; txt.textContent='已停止'; btn.textContent='启动监控'; btn.className='btn btn-sm btn-success'; }
+  if (refreshStatusInFlight) { refreshStatusQueued = true; return refreshStatusInFlight; }
+  refreshStatusInFlight = (async () => {
+    let status;
+    do {
+      refreshStatusQueued = false;
+      status = await api('GET', '/api/status');
+      const dot = document.getElementById('statusDot'), txt = document.getElementById('statusText'), btn = document.getElementById('btnToggleMonitor');
+      if (status.monitor_running) { dot.className='status-dot on'; txt.textContent=`运行中 · ${status.last_run_time?'上次: '+new Date(status.last_run_time).toLocaleTimeString():'等待首次运行'}`; btn.textContent='停止监控'; btn.className='btn btn-sm btn-danger'; }
+      else { dot.className='status-dot off'; txt.textContent='已停止'; btn.textContent='启动监控'; btn.className='btn btn-sm btn-success'; }
+    } while (refreshStatusQueued);
+    return status;
+  })();
+  try { return await refreshStatusInFlight; }
+  finally { refreshStatusInFlight = null; }
 }
 
 // --- Users ---
 async function loadUsers() {
-  const users = await api('GET', '/api/users');
-  const box = document.getElementById('userList');
-  if (!users.length) { box.innerHTML = '<div class="empty" style="padding:40px"><div class="icon">👋</div><p style="margin:8px 0">欢迎使用！</p><p style="font-size:12px;color:var(--text3);margin-bottom:12px">请先添加要监控的 Steam 用户</p><button class="btn btn-primary" onclick="showAddModal()">+ 添加第一个用户</button></div>'; return; }
-  box.innerHTML = users.map(u => {
+  if (loadUsersInFlight) { loadUsersQueued = true; return loadUsersInFlight; }
+  loadUsersInFlight = (async () => {
+    do {
+      loadUsersQueued = false;
+      const users = await api('GET', '/api/users');
+      const box = document.getElementById('userList');
+      if (!users.length) { box.innerHTML = '<div class="empty" style="padding:40px"><div class="icon">👋</div><p style="margin:8px 0">欢迎使用！</p><p style="font-size:12px;color:var(--text3);margin-bottom:12px">请先添加要监控的 Steam 用户</p><button class="btn btn-primary" onclick="showAddModal()">+ 添加第一个用户</button></div>'; continue; }
+      box.innerHTML = users.map(u => {
     const active = u.steam_id === currentSteamId ? ' active' : '';
     const badge = u.is_active
       ? (u.consecutive_fails > 0 ? `<span class="badge badge-fail">失败×${u.consecutive_fails}</span>`
@@ -521,19 +588,59 @@ async function loadUsers() {
         <div class="user-name"><span class="user-name-text">${esc(u.nickname||u.steam_id)}</span><span class="user-badges">${badge}${freqBadge}</span></div>
         <div class="user-meta"><span>📦 ${u.item_count}件</span><span>Σ ${u.api_total_count}</span></div>
       </div></div>`;
-  }).join('');
+      }).join('');
+    } while (loadUsersQueued);
+  })();
+  try { return await loadUsersInFlight; }
+  finally { loadUsersInFlight = null; }
 }
 
 // --- Select user & load inventory ---
 async function selectUser(sid) {
   currentSteamId = sid; activeCategory = 'all';
-  await loadUsers(); await loadInventory(sid);
+  await Promise.all([loadUsers(), loadInventory(sid)]);
+}
+
+function renderChangesHtml(changes) {
+  const CHANGE_LIMIT = 10;
+  const changeHtml = changes.length===0 ? '<div style="color:var(--text3);text-align:center">暂无变化</div>' :
+    changes.map((c, i) => {
+      const hidden = i >= CHANGE_LIMIT ? ' style="display:none"' : '';
+      const cls = i >= CHANGE_LIMIT ? 'change-item change-extra' : 'change-item';
+      const changeName = c.name_zh||c.detail?.market_hash_name||c.detail?.item?.market_hash_name||c.detail?.current_state?.market_hash_name||'?';
+      return `<div class="${cls}"${hidden}><span class="change-badge ${c.change_type}">${CHANGETYPE_ZH[c.change_type]||c.change_type}</span><span class="change-detail">${esc(changeName)}</span><span class="change-time">${c.change_time?new Date(c.change_time).toLocaleString():''}</span></div>`;
+    }).join('');
+  const expandBtn = changes.length > CHANGE_LIMIT
+    ? `<div id="changeExpand" style="text-align:center;padding:12px 0"><button class="btn btn-sm btn-ghost" onclick="toggleChanges()">展开全部 (${changes.length} 条)</button></div>`
+    : '';
+  return changeHtml + expandBtn;
 }
 
 async function loadInventory(sid) {
   const c = document.getElementById('content');
+  const request = beginViewRequest();
   c.innerHTML = '<div style="padding:40px;text-align:center"><div class="spinner"></div></div>';
-  const [inv, changes] = await Promise.all([api('GET',`/api/users/${sid}/inventory`), api('GET',`/api/users/${sid}/changes?limit=500`)]);
+  const changesPromise = api('GET', `/api/users/${sid}/changes?limit=500`, undefined, { signal: request.controller.signal });
+  // Attach a rejection handler before awaiting the inventory so a fast history
+  // failure cannot surface as an unhandled rejection while inventory is loading.
+  const changesResultPromise = changesPromise.then(
+    changes => ({ changes }),
+    error => ({ error }),
+  );
+  let inv;
+  try {
+    inv = await api('GET', `/api/users/${sid}/inventory`, undefined, { signal: request.controller.signal });
+  } catch (error) {
+    if (!isAbortError(error) && isCurrentView(request)) {
+      if (error instanceof ApiError && error.status === 404) {
+        c.innerHTML = '<div class="empty"><div class="icon">📭</div><p>暂无数据</p></div>';
+      } else {
+        showViewError(c, error, `loadInventory(${jsonAttr(sid)})`);
+      }
+    }
+    return;
+  }
+  if (!isCurrentView(request)) return;
   if (inv.error) { c.innerHTML = '<div class="empty"><div class="icon">📭</div><p>暂无数据</p></div>'; return; }
   currentInventory = inv;
 
@@ -576,26 +683,14 @@ async function loadInventory(sid) {
   // Item grid
   html += `<div class="item-grid" id="itemGrid"></div>`;
 
-  // Changes & archives tabs
-  const CHANGE_LIMIT = 10;
-  const changeHtml = changes.length===0 ? '<div style="color:var(--text3);text-align:center">暂无变化</div>' :
-    changes.map((c, i) => {
-      const hidden = i >= CHANGE_LIMIT ? ' style="display:none"' : '';
-      const cls = i >= CHANGE_LIMIT ? 'change-item change-extra' : 'change-item';
-      const changeName = c.name_zh||c.detail?.market_hash_name||c.detail?.item?.market_hash_name||c.detail?.current_state?.market_hash_name||'?';
-      return `<div class="${cls}"${hidden}><span class="change-badge ${c.change_type}">${CHANGETYPE_ZH[c.change_type]||c.change_type}</span><span class="change-detail">${esc(changeName)}</span><span class="change-time">${c.change_time?new Date(c.change_time).toLocaleString():''}</span></div>`;
-    }).join('');
-  const expandBtn = changes.length > CHANGE_LIMIT
-    ? `<div id="changeExpand" style="text-align:center;padding:12px 0"><button class="btn btn-sm btn-ghost" onclick="toggleChanges()">展开全部 (${changes.length} 条)</button></div>`
-    : '';
-
+  // Changes are independent of the inventory. Render the inventory first and fill this
+  // panel when the history request completes so a slow history response cannot delay it.
   html += `<div class="panel" style="margin-top:20px"><div class="tabs">
     <div class="tab active" onclick="switchTab(this,'changesTab')">📜 变化记录</div>
     <div class="tab" onclick="switchTab(this,'archiveTab')">📅 历史快照</div>
   </div>
   <div id="changesTab" class="panel-body">
-    ${changeHtml}
-    ${expandBtn}
+    <div id="changesContent" style="text-align:center;padding:10px"><div class="spinner"></div></div>
   </div>
   <div id="archiveTab" class="panel-body" style="display:none"><div style="text-align:center;padding:20px"><div class="spinner"></div></div></div></div>`;
 
@@ -622,6 +717,16 @@ async function loadInventory(sid) {
 
   c.innerHTML = html;
   renderFilteredItems();
+  changesResultPromise.then(({ changes, error }) => {
+    if (!isCurrentView(request) || currentSteamId !== sid) return;
+    const changesContent = document.getElementById('changesContent');
+    if (!changesContent) return;
+    if (error) {
+      if (!isAbortError(error)) changesContent.innerHTML = `<div style="color:var(--red);text-align:center">变化记录加载失败 <button class="btn btn-sm btn-ghost" onclick="loadInventory(${jsonAttr(sid)})">重试</button></div>`;
+      return;
+    }
+    changesContent.innerHTML = renderChangesHtml(changes);
+  });
 }
 
 // --- Display mode ---
@@ -1004,9 +1109,19 @@ async function setUserFrequency(sid, freq) {
 // --- 总管理面板（右上角按钮触发，管理所有用户） ---
 async function showManagePanel() {
   const c = document.getElementById('content');
+  const request = beginViewRequest();
   c.innerHTML = '<div style="padding:40px;text-align:center"><div class="spinner"></div></div>';
-  const users = await api('GET', '/api/users');
-  const trash = await api('GET', '/api/trash');
+  let users, trash;
+  try {
+    [users, trash] = await Promise.all([
+      api('GET', '/api/users', undefined, { signal: request.controller.signal }),
+      api('GET', '/api/trash', undefined, { signal: request.controller.signal }),
+    ]);
+  } catch (error) {
+    if (!isAbortError(error) && isCurrentView(request)) showViewError(c, error, 'showManagePanel()');
+    return;
+  }
+  if (!isCurrentView(request)) return;
 
   let html = `<div class="panel">
     <div class="panel-header">
@@ -1095,17 +1210,19 @@ async function showManagePanel() {
     html += '</tbody></table></div></div>';
   }
 
+  if (!isCurrentView(request)) return;
   c.innerHTML = html;
   // 异步加载频率面板
-  loadFreqPanel();
+  loadFreqPanel(request.version);
 }
 
 // --- 频率面板 ---
-async function loadFreqPanel() {
+async function loadFreqPanel(viewVersion = viewRequestVersion) {
   const el = document.getElementById('freqPanelContent');
   if (!el) return;
   try {
     const fs = await api('GET', '/api/frequency/status');
+    if (viewVersion !== viewRequestVersion) return;
     const labels = {high: '⚡ 高频', medium: '🕐 中频', low: '💤 低频'};
     let html = '';
     for (const [tier, label] of Object.entries(labels)) {
@@ -1125,7 +1242,7 @@ async function loadFreqPanel() {
     }
     el.innerHTML = html;
   } catch(e) {
-    el.innerHTML = '<span style="color:var(--red)">加载失败</span>';
+    if (viewVersion === viewRequestVersion && !isAbortError(e)) el.innerHTML = '<span style="color:var(--red)">加载失败</span>';
   }
 }
 async function deleteUser(sid) {
@@ -1142,8 +1259,15 @@ async function deleteUser(sid) {
 // --- 回收站 ---
 async function showTrash() {
   const c = document.getElementById('content');
+  const request = beginViewRequest();
   c.innerHTML = '<div style="padding:20px;text-align:center"><div class="spinner"></div></div>';
-  const trash = await api('GET', '/api/trash');
+  let trash;
+  try { trash = await api('GET', '/api/trash', undefined, { signal: request.controller.signal }); }
+  catch (error) {
+    if (!isAbortError(error) && isCurrentView(request)) showViewError(c, error, 'showTrash()');
+    return;
+  }
+  if (!isCurrentView(request)) return;
   if (!trash.length) {
     c.innerHTML = '<div class="empty"><div class="icon">🗑️</div><p>回收站为空</p></div>';
     return;
@@ -1182,7 +1306,7 @@ async function permanentDeleteUser(sid) {
 async function toggleMonitor() { const s=await api('GET','/api/status'); if(s.monitor_running){await api('POST','/api/monitor/stop');toast('已停止');}else{await api('POST','/api/monitor/start');toast('已启动');} await refreshStatus(); }
 async function fetchNow() { const btn=document.getElementById('btnFetchNow'); btn.disabled=true; btn.innerHTML='<span class="spinner"></span>'; try{const r=await api('POST','/api/monitor/fetch-now'); toast(r.ok?`完成: 成功${r.stats?.success||0} 失败${r.stats?.fail||0}`:'失败');}catch(e){toast('请求失败');} btn.disabled=false; btn.innerHTML='⟳ 立即爬取'; await loadUsers(); if(currentSteamId) await loadInventory(currentSteamId); await refreshStatus(); }
 
-function switchTab(el, id) { el.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); el.classList.add('active'); el.closest('.panel').querySelectorAll('.panel-body[id$="Tab"]').forEach(p=>p.style.display='none'); document.getElementById(id).style.display=''; if(id==='archiveTab') loadArchives(currentSteamId); }
+function switchTab(el, id) { el.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active')); el.classList.add('active'); el.closest('.panel').querySelectorAll('.panel-body[id$="Tab"]').forEach(p=>p.style.display='none'); document.getElementById(id).style.display=''; if(id==='archiveTab') void loadArchives(currentSteamId); }
 function toggleChanges() {
   const extras = document.querySelectorAll('.change-extra');
   const btn = document.querySelector('#changeExpand .btn');
@@ -1192,11 +1316,22 @@ function toggleChanges() {
   btn.textContent = hidden ? '收起' : `展开全部 (${document.querySelectorAll('.change-item').length} 条)`;
 }
 async function loadArchives(sid) {
-  const [a, sched] = await Promise.all([
-    api('GET', `/api/users/${sid}/archives`),
-    api('GET', '/api/schedule'),
-  ]);
+  const requestVersion = viewRequestVersion;
   const el = document.getElementById('archiveTab');
+  if (!el || requestVersion !== viewRequestVersion || currentSteamId !== sid) return;
+  let a, sched;
+  try {
+    [a, sched] = await Promise.all([
+      api('GET', `/api/users/${sid}/archives`),
+      api('GET', '/api/schedule'),
+    ]);
+  } catch (error) {
+    if (!isAbortError(error) && requestVersion === viewRequestVersion && currentSteamId === sid) {
+      showViewError(el, error, `loadArchives(${jsonAttr(sid)})`);
+    }
+    return;
+  }
+  if (requestVersion !== viewRequestVersion || currentSteamId !== sid) return;
 
   // 创建快照按钮 + 调度设置
   const hourOpts = Array.from({length:24}, (_,i) => `<option value="${i}" ${sched.snapshot_hour===i?'selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('');
@@ -1287,7 +1422,7 @@ async function createSnapshot(sid) {
     if (r.ok) {
       if (msg) msg.textContent = r.msg;
       toast(r.msg);
-      loadArchives(sid);  // 刷新列表
+      void loadArchives(sid);  // 刷新列表
     } else {
       if (msg) msg.textContent = r.error || '失败';
       toast(r.error || '创建失败');
@@ -1354,7 +1489,15 @@ async function runCompare(sid) {
   if (idA === idB) { toast('请选择两个不同的快照'); return; }
   const el = document.getElementById('compareResult');
   el.innerHTML = '<div style="text-align:center;padding:10px"><div class="spinner"></div></div>';
-  const d = await api('GET', `/api/users/${sid}/compare?a=${idA}&b=${idB}`);
+  let d;
+  try {
+    d = await api('GET', `/api/users/${sid}/compare?a=${idA}&b=${idB}`);
+  } catch (error) {
+    if (!isAbortError(error)) {
+      el.innerHTML = `<div style="color:var(--red);text-align:center">对比加载失败，请重试 <button class="btn btn-sm btn-ghost" onclick="runCompare(${jsonAttr(sid)})">重试</button></div>`;
+    }
+    return;
+  }
   if (d.error) { el.innerHTML = '<div style="color:var(--red)">'+esc(d.error)+'</div>'; return; }
   if (!d.diff.length) { el.innerHTML = '<div style="color:var(--text3);text-align:center">两次快照无差异</div>'; return; }
   const fmtDate = s => s ? s.replace(/(\d{2})(\d{2})(\d{2})(\d{2})/, '$1年$2月$3日$4时') : '';
@@ -1369,12 +1512,20 @@ async function init() {
   // 检查认证
   const ok = await checkAuth();
   if (!ok) { showLogin(); return; }
-  await refreshStatus(); await loadUsers(); startHeartbeat(); connectWS();
-  const s = await api('GET','/api/status');
+  stopLiveUpdates();
+  let s;
+  try {
+    [s] = await Promise.all([refreshStatus(), loadUsers()]);
+  } catch (error) {
+    if (!isAbortError(error) && error?.status !== 401) showViewError(document.getElementById('content'), error, 'init()');
+    return;
+  }
+  startLiveUpdates();
   if (!s.monitor_running) { await api('POST','/api/monitor/start'); toast('监控已自动启动'); await refreshStatus(); }
-  pollTimer = setInterval(async()=>{ await refreshStatus(); await loadUsers(); }, 30000);
 }
-init();
+init().catch(error => {
+  if (!isAbortError(error) && error?.status !== 401) showViewError(document.getElementById('content'), error, 'init()');
+});
 </script>
 </body>
 </html>

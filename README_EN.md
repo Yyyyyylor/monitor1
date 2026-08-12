@@ -32,6 +32,13 @@ STEAM_HOSTS_OVERRIDE=127.0.0.1:443
 - The responsive operations-console UI adds calmer spacing, tiered stat cards, category pills, unified modals, and restrained motion. It automatically minimizes motion when the operating system requests reduced motion.
 - Inventory images still load directly from Steam CDN, but now use six high-priority/auto first-screen requests followed by a bounded six-request queue (four on mobile), content-viewport prefetching, asynchronous decoding, and fade-in. This improves first-screen and scroll performance without risky unlimited CDN concurrency.
 
+## Runtime Reliability and Responsiveness
+
+- Status and user-list refreshes coalesce overlapping polling, live-update, and user-initiated requests. Fast switches between users, the management panel, and the recycle bin cancel stale page requests so old responses cannot replace the current view.
+- The inventory renders before its independent change history and archive requests. Network, server, or deleted-snapshot errors show a retryable state, while an empty inventory still shows its normal empty state.
+- Monitoring uses a bounded worker queue while preserving the configured concurrency limit and random jitter. Stopping monitoring or the web service waits for workers, archive jobs, WebSockets, and shared network resources to shut down cleanly.
+- Successful runs no longer rewrite an already-clear failure state; bulk import preloads existing records to avoid repeated queries; Steam 429 waits honor `Retry-After` but are capped by `STEAM_RETRY_AFTER_MAX_SECONDS` (300 seconds by default).
+
 ### 3. Double-click `start.bat`
 
 The browser opens `http://localhost:8080` automatically
